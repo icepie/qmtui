@@ -24,16 +24,10 @@ esac
 PKGNAME="qmtui"
 OUTPUT_FILE="${PKGNAME}_${VERSION}-${PKGREL}_${ARCH}.deb"
 
-BIN_PATH="bin/Release/net10.0/${RID}/publish/qmtui"
-if [ ! -f "$BIN_PATH" ]; then
-    BIN_PATH="bin/Release/net10.0/${RID}/publish/qmtui"
-fi
+echo "==> Building native AOT binary for Debian ${ARCH} (${RID})..."
+dotnet publish -c Release -r "${RID}" QmTui.csproj
 
-if [ ! -f "$BIN_PATH" ]; then
-    echo "==> Binary not found at $BIN_PATH, building native AOT binary for Debian ${ARCH} (${RID})..."
-    dotnet publish -c Release -r "${RID}" QmTui.csproj
-    BIN_PATH="bin/Release/net10.0/${RID}/publish/qmtui"
-fi
+BIN_PATH="bin/Release/net10.0/${RID}/publish/qmtui"
 
 if [ ! -f "$BIN_PATH" ]; then
     echo "Error: Binary not found at $BIN_PATH after publish."

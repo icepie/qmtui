@@ -30,6 +30,37 @@ public static class StaticResourceHelper
 
         return LoadEmbeddedText(fileName);
     }
+    public static byte[] LoadStaticBytes(string fileName)
+    {
+        var filePath = ResolveDiskFilePath(fileName);
+        if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
+        {
+            try
+            {
+                return File.ReadAllBytes(filePath);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Warn("StaticResourceHelper", $"Failed to read {filePath}: {ex.Message}");
+            }
+        }
+
+        var resourceName = $"QmTui.www.{fileName.Replace('/', '.')}";
+        try
+        {
+            using var stream = s_assembly.GetManifestResourceStream(resourceName);
+            if (stream == null) return [];
+            using var output = new MemoryStream();
+            stream.CopyTo(output);
+            return output.ToArray();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("StaticResourceHelper", $"Failed to load embedded resource: {resourceName}", ex);
+            return [];
+        }
+    }
+
 
     /// <summary>
     /// 从当前程序集资源流中读取内嵌文本
@@ -59,18 +90,24 @@ public static class StaticResourceHelper
     /// </summary>
     public static string? ResolveDiskFilePath(string fileName)
     {
+        var relativePath = fileName.Replace('/', Path.DirectorySeparatorChar);
+        if (Path.IsPathRooted(relativePath) || relativePath.Split(Path.DirectorySeparatorChar).Contains(".."))
+        {
+            return null;
+        }
+
         var baseDir = AppContext.BaseDirectory;
-        var p1 = Path.Combine(baseDir, "www", fileName);
+        var p1 = Path.Combine(baseDir, "www", relativePath);
         if (File.Exists(p1)) return p1;
 
         var curDir = Directory.GetCurrentDirectory();
-        var p2 = Path.Combine(curDir, "www", fileName);
+        var p2 = Path.Combine(curDir, "www", relativePath);
         if (File.Exists(p2)) return p2;
 
-        var p3 = Path.Combine("/usr/share/qmtui/www", fileName);
+        var p3 = Path.Combine("/usr/share/qmtui/www", relativePath);
         if (File.Exists(p3)) return p3;
 
-        var p4 = Path.Combine("/usr/share/qqmusic-tui/www", fileName);
+        var p4 = Path.Combine("/usr/share/qqmusic-tui/www", relativePath);
         if (File.Exists(p4)) return p4;
 
         return null;

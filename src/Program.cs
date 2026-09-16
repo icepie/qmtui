@@ -27,8 +27,8 @@ public static partial class Program
             Console.WriteLine("  -h, --help           Show this help message and exit");
             Console.WriteLine("  -d, --debug          Enable verbose debug logging");
             Console.WriteLine("  -r, --recognize <f>  Recognize song from audio file");
-            Console.WriteLine("  --web                Run standalone Web player server");
-            Console.WriteLine("  -p, --web-port <p>   Specify Web player port (default: 9999)");
+            Console.WriteLine("  --web                Start Web remote-control server (CLI owns audio output)");
+            Console.WriteLine("  -p, --web-port <p>   Specify Web remote-control port (default: 9999)");
             Console.WriteLine("  --no-audio           Disable local GStreamer playback");
             Console.WriteLine("  --no-notify          Disable desktop song switch notifications");
             return;
@@ -55,6 +55,9 @@ public static partial class Program
 
         // 加载用户全局偏好配置，并处理命令行参数覆盖
         QmTui.Models.UserConfig.Load();
+        // Web endpoints and SSE may receive requests before MainWindow is constructed.
+        // Load persisted credentials here so every frontend sees one authoritative session.
+        QmTui.Models.UserSession.Load();
         if (args.Contains("--no-notify"))
         {
             QmTui.Models.UserConfig.Current.EnableSongSwitchNotification = false;
@@ -142,12 +145,13 @@ public static partial class Program
                                    Environment.GetEnvironmentVariable("QQMUSIC_NO_AUDIO") != "1";
 
         IPlayer player;
-        if (useWebMode)
+        if (!initialAudioEnabled)
         {
-            QmTui.Utils.AppLogger.Info("Program", $"Starting with WebPlayer on port {webPort}, audioEnabled={initialAudioEnabled}");
-            var webPlayer = new WebPlayer(webPort, initialAudioEnabled);
+            QmTui.Utils.AppLogger.Info("Program", $"Starting Web server without audio output on port {webPort}.");
+            var webPlayer = new WebPlayer(webPort, initialAudioEnabled: false);
             webPlayer.Initialize();
             player = webPlayer;
+            useWebMode = true;
         }
         else
         {
@@ -155,15 +159,19 @@ public static partial class Program
             gstPlayer.Initialize();
             if (!gstPlayer.IsAvailable)
             {
-                QmTui.Utils.AppLogger.Warn("Program", "GStreamer is not available on this system (e.g. Android PRoot). Falling back to WebPlayer.");
+                QmTui.Utils.AppLogger.Warn("Program", "GStreamer is unavailable; falling back to browser audio output.");
                 gstPlayer.Dispose();
-                var webPlayer = new WebPlayer(webPort, initialAudioEnabled);
+                var webPlayer = new WebPlayer(webPort, initialAudioEnabled: true);
                 webPlayer.Initialize();
                 player = webPlayer;
                 useWebMode = true;
             }
             else
             {
+                if (useWebMode)
+                {
+                    QmTui.Utils.AppLogger.Info("Program", $"Starting Web remote-control server on port {webPort}; CLI owns audio output.");
+                }
                 player = gstPlayer;
             }
         }
@@ -186,7 +194,7 @@ public static partial class Program
 
                 MikuTheme.Apply();
 
-                var mainWindow = new MainWindow(player, useWebMode);
+                var mainWindow = new MainWindow(player, useWebMode, webPort);
 
                 try
                 {

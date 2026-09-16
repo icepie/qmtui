@@ -1,0 +1,15 @@
+// Imports
+var ___CSS_LOADER_API_IMPORT___ = __webpack_require__(23645);
+var ___CSS_LOADER_GET_URL_IMPORT___ = __webpack_require__(61667);
+var ___CSS_LOADER_URL_IMPORT_0___ = __webpack_require__(37634);
+var ___CSS_LOADER_URL_IMPORT_1___ = __webpack_require__(92857);
+exports = ___CSS_LOADER_API_IMPORT___(false);
+var ___CSS_LOADER_URL_REPLACEMENT_0___ = ___CSS_LOADER_GET_URL_IMPORT___(___CSS_LOADER_URL_IMPORT_0___);
+var ___CSS_LOADER_URL_REPLACEMENT_1___ = ___CSS_LOADER_GET_URL_IMPORT___(___CSS_LOADER_URL_IMPORT_1___);
+// Module
+exports.push([module.id, ".user_info_popover__content {\n  padding: 5px 0;\n  border-radius: 10px;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n}\n.user_info_popover__content .split {\n  width: 80%;\n  height: 1px;\n  margin: 2px 0;\n}\n.user_info_popover__content .user_info_popover__content__item {\n  white-space: nowrap;\n  display: flex;\n  align-items: center;\n  height: 40px;\n  padding: 0 15px;\n  justify-content: space-between;\n  cursor: pointer;\n  position: relative;\n}\n.user_info_popover__content .user_info_popover__content__item:hover .common_hover__bg {\n  display: block;\n}\n.user_info_popover__content .user_info_popover__content__item .icon {\n  margin-right: 12px;\n  width: 16px;\n  height: 16px;\n}\n.user_info_popover__content .user_info_popover__content__item .setting__icon_exit_warn {\n  -webkit-mask-image: url(" + ___CSS_LOADER_URL_REPLACEMENT_0___ + ");\n  -webkit-mask-position: 0 0;\n  background-color: #ffa3a3;\n}\n.user_info_popover__content .user_info_popover__content__item .top_user {\n  -webkit-mask-image: url(" + ___CSS_LOADER_URL_REPLACEMENT_1___ + ");\n  -webkit-mask-position: 0 0;\n  background-color: #73c4d2;\n}\n.user_info_popover__content .user_info_popover__content__item .act_button {\n  font-size: 14px;\n  margin-right: 10px;\n}\n.user_info_popover__content .user_info_popover__content__item .act_button:hover {\n  color: #1ece9b;\n}\n.user_info_popover__content .user_info_popover__content__item .act_button_split {\n  width: 1px;\n  height: 60%;\n  background: rgba(128, 128, 128, 0.2);\n}\n.user_info_drop_down__wrapper {\n  padding-left: 9px;\n  cursor: pointer;\n  box-sizing: content-box;\n  display: flex;\n  width: 20px;\n  align-items: center;\n}\n.user_info_drop_down__wrapper:active {\n  padding-top: 1px;\n}\n.user_info_drop_down__wrapper:active svg {\n  margin-left: 1px;\n}\n.ant-popover-arrow {\n  display: none;\n}\n.ant-popover-inner {\n  background: transparent;\n  box-shadow: none;\n}\n.ant-popover-inner-content {\n  background: transparent;\n  box-shadow: none;\n  padding: 0 !important;\n}\n", ""]);
+// Exports
+module.exports = exports;
+
+
+//# sourceURL=webpack://qqmusic/./src/pages/main/css/user_info_popover.less?./node_modules/css-loader/dist/cjs.js!./node_modules/less-loader/dist/cjs.js

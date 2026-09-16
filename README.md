@@ -1,5 +1,40 @@
 # qmtui
 
+## Web 远程控制
+
+```bash
+qmtui --web
+```
+
+标准 `--web` 模式下，CLI 是播放状态与音频输出的唯一来源；浏览器中的账号、曲库、搜索、播放/暂停、循环模式、进度跳转、收藏、评论和音质操作会通过本地 API 与 SSE 同步到同一个 CLI 会话。若 GStreamer 不可用，程序会回退到浏览器音频输出。
+
+`--no-audio` 会跳过本地 GStreamer，并启动无音频输出的 Web 会话；主要用于无音频设备环境和自动化验证。
+
+## 前端开发与构建
+
+前端的唯一源码入口为 `web/`：`web/browser/` 是手工维护的页面与桥接模块，`web/recovered/` 是从现有发行包恢复的可编辑、可重建模块，`web/assets/` 保存静态资源。恢复模块是**已转译的 JavaScript，并非原始 TypeScript/TSX 源码**，重建仍保留 webpack 运行时。
+
+`www/qqmusic/` 是忽略提交的生成目录，不应直接修改。安装 Node.js **22 或更高版本**后，无需安装前端依赖即可重建：
+
+```bash
+node scripts/build-web.mjs
+```
+
+普通 `dotnet build` / `dotnet publish` 会在收集嵌入资源与复制文件前自动执行上述构建，首次检出也会生成完整资源。前端工程开发另需 pnpm：
+
+```bash
+pnpm install
+pnpm check         # 检查维护的前端源码
+pnpm typecheck     # JavaScript 类型检查
+pnpm test:web      # 前端单元测试
+pnpm build         # 类型检查并生成前端产物
+pnpm web:build     # 仅生成前端产物
+pnpm web:check     # 检查生成目录是否与源码一致
+pnpm web:recover --from /path/to/qqmusic --out /tmp/qmtui-recovered
+```
+
+`web:recover` 仅用于维护恢复流程，需指定发行包目录和尚不存在的输出目录，拒绝覆盖已有源码。日常修改在 `web/` 中进行，无需重新恢复模块；`scripts/test-all.sh` 会执行源码检查、类型检查、前端与 .NET 测试、发布以及浏览器端到端验证。
+
 ## 免责声明 (Disclaimer)
 1. **独立第三方开源工具**：`qmtui` 为开源社区独立开发与维护的终端播放客户端，与任何在线音乐服务平台或其关联公司**不存在任何形式的商业合作、授权、从属或背书关系**。
 2. **版权与内容归属**：本项目不存储、托管或分发任何音频、歌词、封面及元数据文件。运行期间请求的所有音频流、歌词文本与多媒体资源之知识产权均归其合法版权方、唱片公司或平台所有。

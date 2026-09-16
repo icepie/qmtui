@@ -169,7 +169,21 @@ public sealed partial class MusicApi
     public static async Task<(string? Url, string Quality, AudioQualityTier Tier)> GetPlayUrlForTierAsync(string songMid, string mediaMid = "", AudioQualityTier preferred = AudioQualityTier.SQ, CancellationToken ct = default)
     {
         var options = await ProbeSongQualitiesAsync(songMid, mediaMid, ct).ConfigureAwait(false);
+        return SelectPlayUrl(options, preferred);
+    }
 
+    /// <summary>
+    /// 探测歌曲全档音质可用性并解析直链，一并返回探测结果，供 Web 端音质列表即时同步。
+    /// </summary>
+    public static async Task<(string? Url, string Quality, AudioQualityTier Tier, List<QualityOption> Options)> ProbeAndResolvePlayUrlAsync(string songMid, string mediaMid = "", AudioQualityTier preferred = AudioQualityTier.SQ, CancellationToken ct = default)
+    {
+        var options = await ProbeSongQualitiesAsync(songMid, mediaMid, ct).ConfigureAwait(false);
+        var (url, quality, tier) = SelectPlayUrl(options, preferred);
+        return (url, quality, tier, options);
+    }
+
+    private static (string? Url, string Quality, AudioQualityTier Tier) SelectPlayUrl(List<QualityOption> options, AudioQualityTier preferred)
+    {
         // 先尝试用户偏好的目标档位
         var target = options.FirstOrDefault(o => o.Tier == preferred && o.Available);
         if (target != null && !string.IsNullOrEmpty(target.PlayUrl))

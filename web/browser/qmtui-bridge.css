@@ -1,0 +1,386 @@
+.top_split,
+.top_setting,
+.top_system_cont {
+  display: none !important;
+}
+.route_cont.qmtui-route-active {
+  position: relative !important;
+  display: grid !important;
+  grid-template-rows: minmax(0, 1fr) 42px 70px !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+.route_cont.qmtui-route-active > .animation__wrapper,
+.route_cont.qmtui-route-active > .route_wrap {
+  display: none !important;
+}
+.route_cont.qmtui-route-active > #qmtui-route-host {
+  position: relative !important;
+  inset: auto !important;
+  grid-row: 1 !important;
+  width: auto !important;
+  height: auto !important;
+  min-height: 0 !important;
+  z-index: 20 !important;
+  background: var(--bg_color, #1e2028) !important;
+}
+.route_cont.qmtui-route-active > .player_process_wrapper {
+  grid-row: 2 !important;
+  position: relative !important;
+  inset: auto !important;
+  width: 100% !important;
+  align-self: end !important;
+  z-index: 30 !important;
+}
+.route_cont.qmtui-route-active > .player_cont {
+  grid-row: 3 !important;
+  position: relative !important;
+  inset: auto !important;
+  width: 100% !important;
+  z-index: 30 !important;
+}
+.qmtui-native-route {
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+.qmtui-native-route .layout_detail {
+  display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.qmtui-native-route .main_cont {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto !important;
+}
+.qmtui-native-route .mod_songlist,
+.qmtui-native-route .songlist_cont {
+  height: auto !important;
+  min-height: 0 !important;
+  flex: 0 0 auto !important;
+  overflow: visible !important;
+}
+a.nav_item[href*="/local"],
+a.nav_item[href*="/webdav"],
+a.nav_item[href*="/webDav"] {
+  display: none !important;
+}
+.cover_layout .cover_player_page_top_cont.right {
+  display: none !important;
+}
+.cover_layout .quality_popover_content {
+  opacity: 1 !important;
+  filter: none !important;
+  color: rgba(255, 255, 255, 0.9) !important;
+}
+.cover_layout .quality_popover_content [style*="opacity"] {
+  opacity: 1 !important;
+}
+.cover_layout .quality_popover_content [disabled] {
+  opacity: 0.45 !important;
+}
+.qmtui-search-results {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  overflow-anchor: none;
+  padding: 0 40px 32px;
+}
+.qmtui-search-head {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: 0 -40px;
+  padding: 20px 40px 12px;
+  background: var(--bg_color, #1e2028);
+}
+.qmtui-search-word {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--text_color, rgba(255, 255, 255, 0.95));
+}
+.qmtui-search-head .qmtui-page__tabs {
+  margin-top: 16px;
+}
+.qmtui-loading,
+.qmtui-empty {
+  padding: 48px 40px;
+  text-align: center;
+  color: var(--text_color_secondary, rgba(255, 255, 255, 0.55));
+}
+.qmtui-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+}
+.qmtui-detail-actions .mod_btn {
+  margin-right: 0;
+}
+.qmtui-login-body {
+  padding: 4px 28px 26px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.9);
+}
+.qmtui-login-methods {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0 0 22px;
+  padding: 4px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+}
+.qmtui-login-tab {
+  height: 38px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.58);
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.qmtui-login-tab:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.07);
+}
+.qmtui-login-tab.active {
+  color: #fff;
+  background: #1f9f75;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+.qmtui-login-tab:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.qmtui-login-panel {
+  min-height: 246px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.qmtui-login-qr {
+  display: block;
+  width: 210px;
+  height: 210px;
+  margin: 0 auto 10px;
+  background: #fff;
+  padding: 8px;
+  border-radius: 6px;
+  box-sizing: border-box;
+}
+.qmtui-login-placeholder {
+  width: 210px;
+  height: 210px;
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.035);
+  color: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+}
+.qmtui-login-status {
+  min-height: 22px;
+  margin: 10px 0 0;
+  color: rgba(255, 255, 255, 0.52);
+}
+.qmtui-login-cookie {
+  min-height: 246px;
+  justify-content: flex-start;
+  padding-top: 28px;
+}
+.qmtui-login-cookie textarea {
+  min-height: 132px;
+}
+.qmtui-login-submit {
+  align-self: flex-end;
+  margin-top: 4px;
+}
+.qmtui-native-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  border: 0;
+  outline: 0;
+  padding: 10px 12px;
+  margin: 0 0 12px;
+  resize: vertical;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+}
+.qmtui-create-playlist {
+  padding: 24px 30px 28px;
+  text-align: center;
+}
+.qmtui-comment-editor {
+  padding: 20px 40px 10px;
+}
+.qmtui-comment-editor textarea {
+  min-height: 78px;
+}
+.qmtui-comment-title {
+  padding: 12px 40px 0;
+  font-size: 16px;
+}
+.qmtui-comment-list {
+  padding: 0 40px 36px;
+}
+.qmtui-comment-list .comment__list_item {
+  position: relative;
+  min-height: 62px;
+  padding: 18px 0 18px 62px;
+}
+.qmtui-comment-list .comment__avatar {
+  position: absolute;
+  left: 0;
+  top: 18px;
+  width: 42px;
+  height: 42px;
+}
+.qmtui-comment-list .comment__avatar img {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.qmtui-comment-list .comment__title {
+  margin: 0 0 6px;
+  font-weight: 400;
+}
+.qmtui-comment-list .comment__text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.qmtui-comment-list .comment__opt {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.qmtui-comment-delete {
+  margin-left: 14px;
+  cursor: pointer;
+}
+.qmtui-toast {
+  position: fixed;
+  left: 50%;
+  top: 74px;
+  z-index: 11000;
+  transform: translateX(-50%);
+  padding: 10px 18px;
+  border-radius: 4px;
+  background: #1ecc94;
+  color: #fff;
+  box-shadow: 0 8px 24px #0006;
+}
+.qmtui-toast.error {
+  background: #e75b52;
+}
+.qmtui-page {
+  display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0 40px 28px;
+  box-sizing: border-box;
+}
+.qmtui-page__head {
+  flex: 0 0 auto;
+  padding: 28px 0 18px;
+}
+.qmtui-page__body {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+.qmtui-page__body > .mod_playlist,
+.qmtui-page__body > .mod_album {
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  overflow: hidden !important;
+}
+.qmtui-page__body .mod_playlist {
+  margin-right: 0 !important;
+}
+.qmtui-page__body .playlist__item,
+.qmtui-page__body .album__item {
+  box-sizing: border-box !important;
+}
+.qmtui-page__head p {
+  margin: 0;
+}
+.qmtui-page__tabs {
+  display: flex;
+  gap: 32px;
+  margin-top: 20px;
+}
+.qmtui-page__tab {
+  padding: 8px 0;
+  border-bottom: 3px solid transparent;
+  cursor: pointer;
+}
+.qmtui-page__tab.active {
+  color: #1ed99a;
+  border-color: #1ed99a;
+}
+.qmtui-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 22px;
+  padding: 4px 0 30px;
+}
+.qmtui-card {
+  min-width: 0;
+  cursor: pointer;
+}
+.qmtui-card__cover {
+  position: relative;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.qmtui-card__cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.2s ease;
+}
+.qmtui-card:hover img {
+  transform: scale(1.04);
+}
+.qmtui-card__play {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 42px;
+  height: 42px;
+  border: 0;
+  border-radius: 50%;
+  background: #1ed99a;
+  color: #12221e;
+  font-size: 18px;
+  opacity: 0;
+  cursor: pointer;
+}
+.qmtui-card:hover .qmtui-card__play {
+  opacity: 1;
+}
+.qmtui-card__title {
+  margin: 10px 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qmtui-card__subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

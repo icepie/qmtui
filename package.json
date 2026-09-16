@@ -4,14 +4,22 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "biome check www",
-    "check:write": "biome check --write www",
-    "check:all": "biome check www && dotnet format --verify-no-changes && dotnet test",
-    "lint": "biome lint www",
-    "format": "biome format --write www",
-    "format:all": "biome format --write www && dotnet format"
+    "build": "pnpm typecheck && node scripts/build-web.mjs",
+    "web:recover": "node scripts/recover-web.mjs",
+    "web:build": "node scripts/build-web.mjs",
+    "web:check": "node scripts/build-web.mjs --check",
+    "check": "biome check web/browser scripts tests/web",
+    "check:write": "biome check --write web/browser scripts tests/web",
+    "lint": "biome lint web/browser scripts tests/web",
+    "format": "biome format --write web/browser scripts tests/web",
+    "typecheck": "tsc -p jsconfig.json",
+    "test:web": "node --test tests/web/*.test.mjs",
+    "test:e2e": "node scripts/e2e-test.mjs"
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.9.4"
+    "@biomejs/biome": "^1.9.4",
+    "@playwright/test": "^1.63.0",
+    "acorn": "8.15.0",
+    "typescript": "^7.0.2"
   }
 }

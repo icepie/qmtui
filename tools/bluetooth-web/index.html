@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>蓝牙设置</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <p class="eyebrow">ufi003 · SYSTEM SETTINGS</p>
+        <h1>蓝牙</h1>
+        <p id="summary">正在读取适配器状态…</p>
+      </div>
+      <button id="refresh" class="outline">刷新</button>
+    </header>
+
+    <section class="card controls" aria-label="适配器设置">
+      <div class="setting"><div><strong>蓝牙电源</strong><span>启用或关闭适配器</span></div><button class="switch" data-action="set_power" aria-label="蓝牙电源"></button></div>
+      <div class="setting"><div><strong>允许被发现</strong><span>让附近设备能够看到此设备</span></div><button class="switch" data-action="set_discoverable" aria-label="允许被发现"></button></div>
+      <div class="setting"><div><strong>允许配对</strong><span>接受新的蓝牙配对请求</span></div><button class="switch" data-action="set_pairable" aria-label="允许配对"></button></div>
+    </section>
+
+    <section class="devices">
+      <div class="section-heading"><div><h2>设备</h2><p id="deviceStatus">已保存和已发现的设备</p></div><button id="scan" class="primary">扫描设备</button></div>
+      <div id="deviceList" class="device-list" aria-live="polite"></div>
+    </section>
+
+    <section class="audio-settings">
+      <div class="section-heading"><div><h2>默认音频</h2><p id="audioStatus">正在读取音频设备…</p></div></div>
+      <div class="card audio-card">
+        <label class="audio-select-row"><span><strong>默认输出</strong><small>音乐和系统声音使用的设备</small></span><select id="defaultSink"></select></label>
+        <div id="sinkControls" class="audio-device-controls"></div>
+        <label class="audio-select-row"><span><strong>默认输入</strong><small>录音和识别使用的设备</small></span><select id="defaultSource"></select></label>
+        <div id="sourceControls" class="audio-device-controls"></div>
+      </div>
+    </section>
+
+    <p id="notice" class="notice" role="status"></p>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

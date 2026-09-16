@@ -23,10 +23,17 @@ public sealed partial class MainWindow
         {
             var dlg = new LoginDialog(() =>
             {
-                Application.Invoke(UpdateTopRightButtonsLayout);
+                Application.Invoke(() =>
+                {
+                    UpdateTopRightButtonsLayout();
+                    _standaloneWebServer?.BroadcastState("account");
+                    (_player as WebPlayer)?.Server.BroadcastState("account");
+                });
             });
             RunModalDialog(dlg);
             UpdateTopRightButtonsLayout();
+            _standaloneWebServer?.BroadcastState("account");
+            (_player as WebPlayer)?.Server.BroadcastState("account");
         }
         finally
         {

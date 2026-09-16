@@ -143,11 +143,12 @@ public sealed partial class MainWindow : Window
     private long _lastUserLyricScrollTick;
     private long _lastProgressSaveTick;
 
-    public MainWindow(IPlayer player, bool isWebMode = false)
+
+    public MainWindow(IPlayer player, bool isWebMode = false, int webServerPort = 9999)
     {
         _player = player;
         _isWebMode = isWebMode;
-
+        _webServerPort = webServerPort;
         if (_player is WebPlayer webPlayer)
         {
             _standaloneWebServer = webPlayer.Server;
@@ -155,8 +156,6 @@ public sealed partial class MainWindow : Window
             AttachWebServerEvents(_standaloneWebServer);
         }
 
-        // 载入持久化登录凭证并在后台自动补齐专属 musickey
-        UserSession.Load();
         _preferredQualityTier = AudioQualityHelper.Parse(UserSession.Current.PreferredQuality);
         _actualQualityTier = _preferredQualityTier;
         _currentPlaybackMode = UserSession.Current.PlaybackMode;
@@ -969,6 +968,11 @@ public sealed partial class MainWindow : Window
         Add(_aodView);
         if (_isWebMode)
         {
+            if (_player is not WebPlayer)
+            {
+                StartStandaloneWebServer(openDialog: false);
+            }
+
             _lastUserActivityTick = Environment.TickCount64;
             _aodInactivityTimerToken = Application.AddTimeout(TimeSpan.FromSeconds(1), () =>
             {
@@ -984,9 +988,9 @@ public sealed partial class MainWindow : Window
                 }
                 return true;
             });
-            if (_player is WebPlayer wp)
+            if (_standaloneWebServer?.IsRunning == true)
             {
-                _controlBar.UpdateStatus($"Web播放已就绪: {wp.Url} (15秒无操作息屏)");
+                _controlBar.UpdateStatus($"Web遥控已就绪: {_standaloneWebServer.LocalUrl} (CLI本地输出音频；15秒无操作息屏)");
             }
         }
         _controlBar.NowPlayingClicked += ToggleNowPlayingView;

@@ -66,20 +66,21 @@ public sealed partial class MainWindow
 
             AttachWebServerEvents(_standaloneWebServer);
 
-            var ok = _standaloneWebServer.Start(_webServerPort, initialAudioOutput: true);
+            var remoteControlOnly = _isWebMode;
+            var ok = _standaloneWebServer.Start(_webServerPort, initialAudioOutput: !remoteControlOnly, remoteControlOnly);
             if (ok)
             {
                 UpdateTopRightButtonsLayout();
 
-                // 检测系统是否存在可用音频输出设备，若无可用输出通道则自动禁用 TUI 本地硬件播放
-                if (!Utils.AudioDeviceHelper.HasAudioOutputDevice() && !_isTuiAudioDisabled)
+                if (!remoteControlOnly && !Utils.AudioDeviceHelper.HasAudioOutputDevice() && !_isTuiAudioDisabled)
                 {
                     _ = SetTuiAudioDisabledAsync(true);
                     _controlBar.UpdateStatus($"Web服务已启动: {_standaloneWebServer.LocalUrl} (无本地音频输出，已自动切换为仅Web播放，15秒无操作息屏)");
                 }
                 else
                 {
-                    _controlBar.UpdateStatus($"Web服务已启动: {_standaloneWebServer.LocalUrl} (15秒无操作息屏)");
+                    var mode = remoteControlOnly ? "CLI本地输出音频，Web仅遥控" : "15秒无操作息屏";
+                    _controlBar.UpdateStatus($"Web服务已启动: {_standaloneWebServer.LocalUrl} ({mode})");
                 }
 
                 EnableWebAodWatchdog();
@@ -117,18 +118,39 @@ public sealed partial class MainWindow
         {
             await TogglePlayOrPauseAsync();
         });
-        server.ToggleFavoriteRequested += () => Application.Invoke(async () =>
+        server.ToggleFavoriteRequested += () =>
         {
             var targetSong = _activeSong;
-            if (targetSong != null)
+            if (targetSong == null) return;
+            _ = Task.Run(async () =>
             {
-                await ToggleSongFavoriteAsync(targetSong);
-            }
-        });
-        server.ToggleModeRequested += () => Application.Invoke(TogglePlaybackMode);
+                await ToggleSongFavoriteAsync(targetSong).ConfigureAwait(false);
+                server.BroadcastState("favorite_result");
+            });
+        };
+        server.ToggleModeRequested += () => Application.Invoke(() => TogglePlaybackMode());
         server.ToggleQualityRequested += () => Application.Invoke(async () =>
         {
             await CycleQualityTierAsync(allowHiRes: false);
+        });
+        server.QualityRequested += tier => Application.Invoke(async () =>
+        {
+            if (server.AvailableQualities?.Any(option => option.Tier == tier && !option.Available) == true)
+            {
+                server.BroadcastState("quality_unavailable");
+                return;
+            }
+            await SwitchQualityTierAsync(tier);
+        });
+        server.LibraryPlayRequested += request => Application.Invoke(async () =>
+        {
+            var queue = request.Context;
+            int selectedIndex = queue.FindIndex(song =>
+                (!string.IsNullOrEmpty(song.Mid) && song.Mid == request.Song.Mid) ||
+                (song.Id > 0 && song.Id == request.Song.Id));
+            PlaybackQueueService.Instance.Mode = _currentPlaybackMode;
+            PlaybackQueueService.Instance.SetQueue(queue, Math.Max(selectedIndex, 0));
+            await PlaySongAsync(request.Song);
         });
         server.SeekRequested += sec =>
         {
@@ -146,10 +168,17 @@ public sealed partial class MainWindow
                 _ = _player.SeekAsync(sec);
             }
         };
-        server.VolumeRequested += vol =>
+        server.VolumeRequested += vol => Application.Invoke(() =>
         {
-            server.Volume = vol;
-        };
+            var normalized = Math.Clamp(vol, 0, 100);
+            server.Volume = normalized;
+            _player.SetVolume(normalized);
+            UserSession.Current.Volume = normalized;
+            UserSession.Current.Save();
+            _controlBar.UpdateVolume(normalized, normalized == 0);
+            _mprisService.UpdateVolume(normalized);
+            server.BroadcastState("volume_change");
+        });
         server.ProgressReported += (pos, dur) =>
         {
             if (_isTuiAudioDisabled || _player is WebPlayer)
@@ -180,6 +209,11 @@ public sealed partial class MainWindow
                 }
             });
         };
+            if (server.RemoteControlOnly)
+            {
+                return;
+            }
+
         server.AllClientsDisconnected += () => Application.Invoke(async () =>
         {
             if (_isTuiAudioDisabled)

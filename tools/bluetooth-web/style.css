@@ -1,0 +1,29 @@
+:root { color-scheme: dark; font-family: Inter, "Noto Sans SC", system-ui, sans-serif; background: #17181d; color: #f4f5f8; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 12% 0%, #30405a 0, transparent 30rem), #17181d; }
+.shell { width: min(760px, calc(100% - 32px)); margin: 0 auto; padding: 56px 0 80px; }
+header, .section-heading, .setting, .device, .device-main, .device-actions { display: flex; align-items: center; }
+header, .section-heading { justify-content: space-between; gap: 24px; }
+h1, h2, p { margin: 0; } h1 { font-size: 38px; letter-spacing: -.04em; } h2 { font-size: 20px; }
+.eyebrow { color: #79b8ff; font-size: 12px; font-weight: 700; letter-spacing: .11em; margin-bottom: 8px; }
+header p:not(.eyebrow), .setting span, .section-heading p, .device-address { color: #a9afbd; margin-top: 7px; font-size: 14px; }
+.card, .device { background: #22242c; border: 1px solid #363944; border-radius: 14px; box-shadow: 0 14px 38px #0003; }
+.controls { margin: 36px 0 42px; overflow: hidden; }.setting { min-height: 82px; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid #363944; gap: 24px; }.setting:last-child { border: 0; }.setting strong { display: block; }
+button { border: 0; border-radius: 9px; cursor: pointer; color: inherit; font: inherit; font-weight: 650; padding: 10px 15px; transition: filter .15s, transform .15s; }button:hover { filter: brightness(1.13); }button:active { transform: scale(.97); }button:disabled { opacity: .55; cursor: wait; }
+.primary { color: #071626; background: #6bb4ff; }.outline { background: transparent; border: 1px solid #4b5060; }
+.switch { position: relative; width: 50px; height: 29px; border-radius: 99px; padding: 0; background: #4a4d57; }.switch::after { content: ""; position: absolute; width: 23px; height: 23px; border-radius: 50%; background: white; left: 3px; top: 3px; transition: transform .18s; }.switch.on { background: #328ee5; }.switch.on::after { transform: translateX(21px); }
+.device-list { display: grid; gap: 10px; margin-top: 16px; }.device { justify-content: space-between; padding: 15px 18px; gap: 14px; }.device-main { min-width: 0; gap: 12px; }.indicator { width: 9px; height: 9px; border-radius: 50%; background: #6b7180; flex: none; }.indicator.connected { background: #4ed68b; box-shadow: 0 0 10px #4ed68b; }.device-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.device-address { margin-top: 3px; font-family: ui-monospace, monospace; font-size: 12px; }.device-actions { gap: 8px; flex-wrap: wrap; justify-content: end; }.device-actions button { background: #353943; padding: 8px 11px; font-size: 13px; }.empty { padding: 36px; text-align: center; color: #a9afbd; border: 1px dashed #4b5060; border-radius: 14px; }.notice { min-height: 24px; margin-top: 24px; color: #8ec7ff; }.notice.error { color: #ff9b9b; }
+.audio-settings { margin-top: 44px; }
+.audio-card { margin-top: 16px; padding: 0 20px; }
+.audio-select-row { display: flex; min-height: 86px; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 1px solid #363944; }
+.audio-select-row span { min-width: 0; }
+.audio-select-row strong, .audio-select-row small { display: block; }
+.audio-select-row small { margin-top: 6px; color: #a9afbd; }
+.audio-select-row select { min-width: min(280px, 48%); padding: 9px 12px; border: 1px solid #4b5060; border-radius: 8px; outline: none; color: #f4f5f8; background: #2b2e37; }
+.audio-device-controls { display: flex; min-height: 62px; align-items: center; gap: 12px; border-bottom: 1px solid #363944; }
+.audio-device-controls:last-child { border: 0; }
+.audio-device-controls input[type="range"] { min-width: 0; flex: 1; accent-color: #6bb4ff; }
+.audio-device-controls .volume-value { width: 46px; color: #a9afbd; text-align: right; }
+.audio-device-controls button { background: #353943; }
+
+@media (max-width: 560px) { .shell { padding-top: 32px; } h1 { font-size: 32px; }.device { align-items: flex-start; flex-direction: column; }.device-actions { justify-content: flex-start; }.audio-select-row { align-items: flex-start; flex-direction: column; padding: 18px 0; }.audio-select-row select { width: 100%; min-width: 0; }.audio-device-controls { flex-wrap: wrap; padding: 14px 0; } }

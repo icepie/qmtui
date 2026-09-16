@@ -1,0 +1,19 @@
+[Unit]
+Description=qmtui Bluetooth configuration web service
+After=network-online.target bluetooth.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
+Environment=PULSE_COOKIE=/home/qmtui/.config/pulse/cookie
+WorkingDirectory=/opt/qmtui-bluetooth-web
+ExecStart=/usr/bin/python3 /opt/qmtui-bluetooth-web/server.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

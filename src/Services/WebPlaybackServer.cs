@@ -131,6 +131,12 @@ public sealed partial class WebPlaybackServer : IDisposable
     public PlaybackMode CurrentPlaybackMode { get; set; } = PlaybackMode.ListLoop;
     public AudioQualityTier PreferredQualityTier { get; set; } = AudioQualityTier.SQ;
     public AudioQualityTier ActualQualityTier { get; set; } = AudioQualityTier.SQ;
+    public IReadOnlyList<QualityOption>? AvailableQualities { get; set; }
+    /// <summary>
+    /// When enabled, the browser is a state display and remote control only; it never receives an audio stream.
+    /// </summary>
+    public bool RemoteControlOnly { get; private set; }
+
 
     // 回调事件
     public event Action? NextRequested;
@@ -139,6 +145,7 @@ public sealed partial class WebPlaybackServer : IDisposable
     public event Action? ToggleFavoriteRequested;
     public event Action? ToggleModeRequested;
     public event Action? ToggleQualityRequested;
+    public event Action<AudioQualityTier>? QualityRequested;
     public event Action? PlaybackEnded;
     public event Action<double>? SeekRequested;
     public event Action<int>? VolumeRequested;
@@ -146,13 +153,16 @@ public sealed partial class WebPlaybackServer : IDisposable
     public event Action<bool>? AudioOutputToggled;
     public event Action? AllClientsDisconnected;
 
-    public bool Start(int preferredPort = 9999, bool initialAudioOutput = true)
+    public event Action<WebLibraryPlayRequest>? LibraryPlayRequested;
+
+    public bool Start(int preferredPort = 9999, bool initialAudioOutput = true, bool remoteControlOnly = false)
     {
         lock (_lock)
         {
             if (_isDisposed) return false;
             if (IsRunning) return true;
 
+            RemoteControlOnly = remoteControlOnly;
             AudioOutputEnabled = initialAudioOutput;
             _cts = new CancellationTokenSource();
 
@@ -256,8 +266,9 @@ public sealed partial class WebPlaybackServer : IDisposable
 
             string requestText = Encoding.UTF8.GetString(buffer, 0, bytesRead);
             var headerEnd = requestText.IndexOf("\r\n\r\n", StringComparison.Ordinal);
-            string headerPart = headerEnd >= 0 ? requestText[..headerEnd] : requestText;
-            string bodyPart = headerEnd >= 0 && headerEnd + 4 < requestText.Length ? requestText[(headerEnd + 4)..] : "";
+            if (headerEnd < 0) return;
+            string headerPart = requestText[..headerEnd];
+            string bodyPart = "";
 
             string[] lines = headerPart.Split("\r\n");
             if (lines.Length == 0) return;
@@ -270,33 +281,69 @@ public sealed partial class WebPlaybackServer : IDisposable
             string rawPath = parts[1];
             string path = rawPath.Split('?')[0];
 
-            // 提取 Range 请求头
+            int contentLength = 0;
+            // Extract request metadata needed by byte-sensitive request bodies.
             string? rangeHeader = null;
             foreach (var line in lines)
             {
                 if (line.StartsWith("Range:", StringComparison.OrdinalIgnoreCase))
                 {
                     rangeHeader = line["Range:".Length..].Trim();
-                    break;
                 }
+                else if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                {
+                    int.TryParse(line["Content-Length:".Length..].Trim(), out contentLength);
+                }
+            }
+
+            if (method == "POST" && contentLength > 0)
+            {
+                const int maxRequestBodyBytes = 512 * 1024;
+                if (contentLength > maxRequestBodyBytes)
+                {
+                    await SendResponseAsync(stream, 413, "Payload Too Large", "application/json", "{\"error\":\"request body too large\"}", ct).ConfigureAwait(false);
+                    return;
+                }
+
+                var bodyBytes = new byte[contentLength];
+                int bodyOffset = headerEnd + 4;
+                int copied = Math.Min(contentLength, bytesRead - bodyOffset);
+                if (copied > 0)
+                {
+                    buffer.AsSpan(bodyOffset, copied).CopyTo(bodyBytes);
+                }
+
+                while (copied < contentLength)
+                {
+                    int read = await stream.ReadAsync(bodyBytes.AsMemory(copied, contentLength - copied), readTimeoutCts.Token).ConfigureAwait(false);
+                    if (read == 0) return;
+                    copied += read;
+                }
+
+                bodyPart = Encoding.UTF8.GetString(bodyBytes);
             }
 
             if (method == "GET")
             {
                 if (path == "/" || path == "/index.html")
                 {
-                    string html = StaticResourceHelper.LoadStaticText("index.html");
+                    string html = StaticResourceHelper.LoadStaticText("qqmusic/index.html");
                     await SendResponseAsync(stream, 200, "OK", "text/html; charset=utf-8", html, ct).ConfigureAwait(false);
                 }
-                else if (path == "/style.css")
+                else if (path.StartsWith("/assets/", StringComparison.Ordinal) ||
+                         path.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
+                         path.EndsWith(".css", StringComparison.OrdinalIgnoreCase))
                 {
-                    string css = StaticResourceHelper.LoadStaticText("style.css");
-                    await SendResponseAsync(stream, 200, "OK", "text/css; charset=utf-8", css, ct).ConfigureAwait(false);
-                }
-                else if (path == "/app.js")
-                {
-                    string js = StaticResourceHelper.LoadStaticText("app.js");
-                    await SendResponseAsync(stream, 200, "OK", "application/javascript; charset=utf-8", js, ct).ConfigureAwait(false);
+                    string relativePath = path.TrimStart('/');
+                    byte[] content = StaticResourceHelper.LoadStaticBytes($"qqmusic/{relativePath}");
+                    if (content.Length == 0)
+                    {
+                        await SendResponseAsync(stream, 404, "Not Found", "text/plain", "Not Found", ct).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await SendBinaryResponseAsync(stream, 200, "OK", GetStaticContentType(path), content, ct).ConfigureAwait(false);
+                    }
                 }
                 else if (path == "/cover")
                 {
@@ -312,6 +359,62 @@ public sealed partial class WebPlaybackServer : IDisposable
                     await HandleSseEventsAsync(client, stream, ct).ConfigureAwait(false);
                     return;
                 }
+                else if (path == "/api/account")
+                {
+                    await HandleAccountAsync(stream, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/login/status")
+                {
+                    await HandleLoginStatusAsync(stream, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/browser/noop")
+                {
+                    await SendResponseAsync(stream, 200, "OK", "application/json", "{\"code\":0}", ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/library/search")
+                {
+                    await HandleLibrarySearchAsync(stream, rawPath, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/library/search/playlists")
+                {
+                    await HandleLibraryPlaylistSearchAsync(stream, rawPath, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/library/search/albums")
+                {
+                    await HandleLibraryAlbumSearchAsync(stream, rawPath, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/library/recommend/daily")
+                {
+                    await HandleDailyRecommendationsAsync(stream, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/library/recommend/guess")
+                {
+                    await HandleGuessRecommendationsAsync(stream, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/library/favorites/songs")
+                {
+                    await HandleFavoriteSongsAsync(stream, rawPath, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/library/playlists")
+                {
+                    await HandleLibraryPlaylistsAsync(stream, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/library/playlist")
+                {
+                    await HandleLibraryPlaylistAsync(stream, rawPath, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/library/album")
+                {
+                    await HandleLibraryAlbumAsync(stream, rawPath, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/library/albums/favorite")
+                {
+                    await HandleFavoriteAlbumsAsync(stream, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/comments")
+                {
+                    await HandleCommentsAsync(stream, rawPath, ct).ConfigureAwait(false);
+                }
                 else
                 {
                     await SendResponseAsync(stream, 404, "Not Found", "text/plain", "Not Found", ct).ConfigureAwait(false);
@@ -319,7 +422,15 @@ public sealed partial class WebPlaybackServer : IDisposable
             }
                 else if (method == "POST")
                 {
-                    if (path == "/api/action")
+                    if (path == "/api/browser/noop")
+                    {
+                        await SendResponseAsync(stream, 200, "OK", "application/json", "{\"code\":0}", ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/browser/ufetch")
+                    {
+                        await HandleBrowserUfetchAsync(stream, bodyPart, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/action")
                     {
                         HandleApiAction(bodyPart);
                         await SendResponseAsync(stream, 200, "OK", "application/json", "{\"ok\":true}", ct).ConfigureAwait(false);
@@ -332,7 +443,7 @@ public sealed partial class WebPlaybackServer : IDisposable
                     else if (path == "/api/favorite")
                     {
                         ToggleFavoriteRequested?.Invoke();
-                        await SendResponseAsync(stream, 200, "OK", "application/json", "{\"ok\":true}", ct).ConfigureAwait(false);
+                        await SendResponseAsync(stream, 202, "Accepted", "application/json", "{\"ok\":true}", ct).ConfigureAwait(false);
                     }
                     else if (path == "/api/mode")
                     {
@@ -341,8 +452,29 @@ public sealed partial class WebPlaybackServer : IDisposable
                     }
                     else if (path == "/api/quality")
                     {
-                        ToggleQualityRequested?.Invoke();
-                        await SendResponseAsync(stream, 200, "OK", "application/json", "{\"ok\":true}", ct).ConfigureAwait(false);
+                        AudioQualityTier? requestedTier = null;
+                        try
+                        {
+                            using var doc = JsonDocument.Parse(bodyPart);
+                            if (doc.RootElement.TryGetProperty("tier", out var tierProp) && tierProp.TryGetInt32(out var tierValue) &&
+                                Enum.IsDefined(typeof(AudioQualityTier), tierValue))
+                            {
+                                requestedTier = (AudioQualityTier)tierValue;
+                            }
+                        }
+                        catch (JsonException) when (string.IsNullOrWhiteSpace(bodyPart))
+                        {
+                        }
+
+                        if (requestedTier.HasValue)
+                        {
+                            QualityRequested?.Invoke(requestedTier.Value);
+                        }
+                        else
+                        {
+                            ToggleQualityRequested?.Invoke();
+                        }
+                        await SendResponseAsync(stream, 202, "Accepted", "application/json", "{\"ok\":true}", ct).ConfigureAwait(false);
                     }
                     else if (path == "/api/next")
                     {
@@ -379,6 +511,54 @@ public sealed partial class WebPlaybackServer : IDisposable
                     {
                         HandleApiProgress(bodyPart);
                         await SendResponseAsync(stream, 200, "OK", "application/json", "{\"ok\":true}", ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/library/play")
+                    {
+                        await HandleLibraryPlayAsync(stream, bodyPart, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/login/start")
+                    {
+                        await HandleLoginStartAsync(stream, bodyPart, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/login/cookie")
+                    {
+                        await HandleCookieLoginAsync(stream, bodyPart, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/logout")
+                    {
+                        await HandleLogoutAsync(stream, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/library/playlist/create")
+                    {
+                        await HandleCreatePlaylistAsync(stream, bodyPart, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/library/playlist/delete")
+                    {
+                        await HandleDeletePlaylistAsync(stream, bodyPart, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/library/playlist/song/add")
+                    {
+                        await HandlePlaylistSongMutationAsync(stream, bodyPart, add: true, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/library/playlist/song/remove")
+                    {
+                        await HandlePlaylistSongMutationAsync(stream, bodyPart, add: false, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/library/album/favorite")
+                    {
+                        await HandleAlbumFavoriteMutationAsync(stream, bodyPart, add: true, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/library/album/unfavorite")
+                    {
+                        await HandleAlbumFavoriteMutationAsync(stream, bodyPart, add: false, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/comments/add")
+                    {
+                        await HandleAddCommentAsync(stream, bodyPart, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/comments/delete")
+                    {
+                        await HandleDeleteCommentAsync(stream, bodyPart, ct).ConfigureAwait(false);
                     }
                     else
                     {
@@ -636,6 +816,35 @@ public sealed partial class WebPlaybackServer : IDisposable
         }
     }
 
+    private static async Task SendBinaryResponseAsync(NetworkStream stream, int statusCode, string statusText, string contentType, byte[] body, CancellationToken ct)
+    {
+        string headers = $"HTTP/1.1 {statusCode} {statusText}\r\n" +
+                         $"Content-Type: {contentType}\r\n" +
+                         $"Content-Length: {body.Length}\r\n" +
+                         "Access-Control-Allow-Origin: *\r\n" +
+                         "Connection: close\r\n" +
+                         "Cache-Control: no-cache\r\n\r\n";
+        byte[] headerBytes = Encoding.ASCII.GetBytes(headers);
+        await stream.WriteAsync(headerBytes.AsMemory(), ct).ConfigureAwait(false);
+        await stream.WriteAsync(body.AsMemory(), ct).ConfigureAwait(false);
+        await stream.FlushAsync(ct).ConfigureAwait(false);
+    }
+
+    private static string GetStaticContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    {
+        ".js" => "application/javascript; charset=utf-8",
+        ".css" => "text/css; charset=utf-8",
+        ".svg" => "image/svg+xml",
+        ".png" => "image/png",
+        ".jpg" or ".jpeg" => "image/jpeg",
+        ".gif" => "image/gif",
+        ".webp" => "image/webp",
+        ".woff" => "font/woff",
+        ".woff2" => "font/woff2",
+        ".ttf" => "font/ttf",
+        _ => "application/octet-stream"
+    };
+
     private static async Task SendResponseAsync(NetworkStream stream, int statusCode, string statusText, string contentType, string content, CancellationToken ct)
     {
         byte[] body = Encoding.UTF8.GetBytes(content);
@@ -694,6 +903,7 @@ public sealed partial class WebPlaybackServer : IDisposable
 
             try
             {
+                try { _loginCts?.Cancel(); } catch { }
                 _cts?.Cancel();
             }
             catch {}

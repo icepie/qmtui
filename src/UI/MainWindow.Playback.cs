@@ -19,7 +19,7 @@ namespace QmTui.UI;
 
 public sealed partial class MainWindow
 {
-    private record PrefetchedPlayInfo(string Url, string Quality, AudioQualityTier ActualTier, DateTimeOffset ExpireAt);
+    private record PrefetchedPlayInfo(string Url, string Quality, AudioQualityTier ActualTier, DateTimeOffset ExpireAt, List<QualityOption>? Options);
     private static readonly Dictionary<string, PrefetchedPlayInfo> s_prefetchedPlayUrls = new(StringComparer.OrdinalIgnoreCase);
     private static readonly object s_prefetchLock = new();
 
@@ -245,17 +245,19 @@ public sealed partial class MainWindow
                 string? url;
                 string? quality;
                 AudioQualityTier actualTier;
+                List<QualityOption>? probedOptions = null;
 
                 if (prefetched != null)
                 {
                     url = prefetched.Url;
                     quality = prefetched.Quality;
                     actualTier = prefetched.ActualTier;
+                    probedOptions = prefetched.Options;
                     AppLogger.Info("MainWindow", $"Prefetch cache hit for {song.Title} ({actualTier})");
                 }
                 else
                 {
-                    (url, quality, actualTier) = await MusicApi.GetPlayUrlForTierAsync(song.Mid, song.EffectiveMediaMid, _preferredQualityTier);
+                    (url, quality, actualTier, probedOptions) = await MusicApi.ProbeAndResolvePlayUrlAsync(song.Mid, song.EffectiveMediaMid, _preferredQualityTier);
                 }
 
                 // 若网络无法获取偏好音质链接，探测本地是否已缓存了该曲目的其他音质档位
@@ -279,6 +281,10 @@ public sealed partial class MainWindow
 
                 playUrl = url;
                 _actualQualityTier = actualTier;
+                if (probedOptions != null && _standaloneWebServer != null && _standaloneWebServer.IsRunning)
+                {
+                    _standaloneWebServer.AvailableQualities = probedOptions;
+                }
                 if (!string.IsNullOrEmpty(quality))
                 {
                     song.Quality = quality;
@@ -501,6 +507,11 @@ public sealed partial class MainWindow
         UserSession.Current.Save();
         _controlBar.UpdateVolume(newVol, newVol == 0);
         _mprisService.UpdateVolume(newVol);
+        if (_standaloneWebServer != null)
+        {
+            _standaloneWebServer.Volume = newVol;
+            _standaloneWebServer.BroadcastState("volume_change");
+        }
     }
 
     private void ToggleMute()
@@ -513,6 +524,11 @@ public sealed partial class MainWindow
             UserSession.Current.Save();
             _controlBar.UpdateVolume(0, true);
             _mprisService.UpdateVolume(0);
+            if (_standaloneWebServer != null)
+            {
+                _standaloneWebServer.Volume = 0;
+                _standaloneWebServer.BroadcastState("volume_change");
+            }
         }
         else
         {
@@ -522,6 +538,11 @@ public sealed partial class MainWindow
             UserSession.Current.Save();
             _controlBar.UpdateVolume(restoreVol, false);
             _mprisService.UpdateVolume(restoreVol);
+            if (_standaloneWebServer != null)
+            {
+                _standaloneWebServer.Volume = restoreVol;
+                _standaloneWebServer.BroadcastState("volume_change");
+            }
         }
     }
 
@@ -550,6 +571,14 @@ public sealed partial class MainWindow
             }
         }
         _lastProgressSec = currentSec;
+
+        if (_standaloneWebServer?.IsRunning == true)
+        {
+            _standaloneWebServer.CurrentPositionSeconds = currentSec;
+            _standaloneWebServer.TotalDurationSeconds = Math.Max(_activeSong.Duration, _player.TotalDurationSeconds);
+            _standaloneWebServer.IsPlaying = _player.IsPlaying || _isWebPlaying;
+            _standaloneWebServer.BroadcastState("progress");
+        }
 
         // 真实收听满 30 秒物理时长门限检测（或超短音频收听超 80%）
         if (!_hasTriggeredCacheForCurrentSong && !_activeSong.IsLocal)
@@ -671,7 +700,21 @@ public sealed partial class MainWindow
         if (_activeSong != null && !_activeSong.IsLocal && !_activeSong.IsWebDav)
         {
             double currentPos = _isTuiAudioDisabled ? _webVirtualPosition : _player.CurrentPositionSeconds;
-            var (url, quality, actualTier) = await MusicApi.GetPlayUrlForTierAsync(_activeSong.Mid, _activeSong.EffectiveMediaMid, newTier);
+            var options = await MusicApi.ProbeSongQualitiesAsync(_activeSong.Mid, _activeSong.EffectiveMediaMid);
+            if (_standaloneWebServer != null && _standaloneWebServer.IsRunning)
+            {
+                _standaloneWebServer.AvailableQualities = options;
+                if (options.All(option => option.Tier != newTier || !option.Available))
+                {
+                    _standaloneWebServer.BroadcastState("quality_unavailable");
+                    return;
+                }
+            }
+            var selected = options.FirstOrDefault(option => option.Tier == newTier && option.Available)
+                ?? options.FirstOrDefault(option => option.Available);
+            var url = selected?.PlayUrl;
+            var quality = selected?.Badge ?? "无音源";
+            var actualTier = selected?.Tier ?? AudioQualityTier.Standard;
             if (!string.IsNullOrEmpty(url))
             {
                 _actualQualityTier = actualTier;
@@ -748,12 +791,12 @@ public sealed partial class MainWindow
                     }
                 }
 
-                var (url, quality, actualTier) = await MusicApi.GetPlayUrlForTierAsync(nextSong.Mid, nextSong.EffectiveMediaMid, _preferredQualityTier).ConfigureAwait(false);
+                var (url, quality, actualTier, options) = await MusicApi.ProbeAndResolvePlayUrlAsync(nextSong.Mid, nextSong.EffectiveMediaMid, _preferredQualityTier).ConfigureAwait(false);
                 if (!string.IsNullOrEmpty(url))
                 {
                     lock (s_prefetchLock)
                     {
-                        s_prefetchedPlayUrls[cacheKey] = new PrefetchedPlayInfo(url, quality, actualTier, DateTimeOffset.UtcNow.AddMinutes(20));
+                        s_prefetchedPlayUrls[cacheKey] = new PrefetchedPlayInfo(url, quality, actualTier, DateTimeOffset.UtcNow.AddMinutes(20), options);
                     }
                     AppLogger.Info("MainWindow", $"Prefetched next track audio URL successfully: {nextSong.Title} ({actualTier})");
                 }

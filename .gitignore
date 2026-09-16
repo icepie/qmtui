@@ -16,10 +16,13 @@ qmtui
 src/Services/AudioRecognition/Native/qafp_runner
 src/Services/AudioRecognition/Runtime/
 .docker/
+.deploy/
 mod/
 qqmusiclinux/
 # 前端开发依赖
 node_modules/
+# 前端构建产物（源码位于 web/）
+www/qqmusic/
 歌单类.md
 
 # 本地发布与 AUR 独立打包配置

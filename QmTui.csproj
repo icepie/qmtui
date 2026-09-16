@@ -22,7 +22,7 @@
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
     <IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies>
-    <DefaultItemExcludes>$(DefaultItemExcludes);tui/**;tests/**;experimental/**;old/**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);tui/**;tests/**;experimental/**;old/**;web/**;www/**</DefaultItemExcludes>
     <InvariantGlobalization>true</InvariantGlobalization>
     <LinkerFlavor Condition="'$(RuntimeIdentifier)' == 'linux-arm64'">lld</LinkerFlavor>
   </PropertyGroup>
@@ -38,9 +38,13 @@
     <InternalsVisibleTo Include="QmTui.Tests" />
   </ItemGroup>
 
-  <ItemGroup>
-    <EmbeddedResource Include="www/**" />
-    <None Update="www/**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-  </ItemGroup>
+  <!-- Collect generated files only after assembly, including on a clean checkout. -->
+  <Target Name="BuildWebAssets" BeforeTargets="AssignTargetPaths" Condition="'$(DesignTimeBuild)' != 'true'">
+    <Exec Command="node &quot;$(MSBuildProjectDirectory)/scripts/build-web.mjs&quot;" WorkingDirectory="$(MSBuildProjectDirectory)" />
+    <ItemGroup>
+      <EmbeddedResource Include="www/**" WithCulture="false" />
+      <None Include="www/**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
 
 </Project>

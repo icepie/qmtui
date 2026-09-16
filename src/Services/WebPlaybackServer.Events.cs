@@ -196,6 +196,7 @@ public sealed partial class WebPlaybackServer
         var json = BuildStateJson(eventType);
         BroadcastSse(json);
     }
+    public string GetStateJson(string eventType) => BuildStateJson(eventType);
 
     private string BuildStateJson(string eventType)
     {
@@ -207,6 +208,7 @@ public sealed partial class WebPlaybackServer
         sb.Append($"\"duration\":{TotalDurationSeconds:F2},");
         sb.Append($"\"volume\":{Volume},");
         sb.Append($"\"audioEnabled\":{(AudioOutputEnabled ? "true" : "false")},");
+        sb.Append($"\"remoteControlOnly\":{(RemoteControlOnly ? "true" : "false")},");
         sb.Append($"\"isFavorite\":{(IsCurrentSongFavorite ? "true" : "false")},");
 
         string modeStr = CurrentPlaybackMode switch
@@ -218,10 +220,33 @@ public sealed partial class WebPlaybackServer
         };
         sb.Append($"\"mode\":\"{modeStr}\",");
         sb.Append($"\"qualityTier\":{(int)ActualQualityTier},");
+        sb.Append($"\"preferredQualityTier\":{(int)PreferredQualityTier},");
         sb.Append($"\"qualityBadge\":\"{AudioQualityHelper.GetBadge(ActualQualityTier)}\",");
-
+        sb.Append("\"availableQualityTiers\":[");
+        if (AvailableQualities != null)
+        {
+            var firstQuality = true;
+            foreach (var option in AvailableQualities)
+            {
+                if (!option.Available) continue;
+                if (!firstQuality) sb.Append(',');
+                sb.Append((int)option.Tier);
+                firstQuality = false;
+            }
+        }
+        sb.Append("],");
+        var session = UserSession.Current;
+        sb.Append("\"account\":{");
+        sb.Append($"\"loggedIn\":{(session.IsLoggedIn ? "true" : "false")},");
+        sb.Append($"\"uin\":\"{EscapeJson(session.Uin)}\",");
+        sb.Append($"\"nick\":\"{EscapeJson(session.Nick)}\",");
+        sb.Append($"\"avatarUrl\":\"{EscapeJson(session.AvatarUrl)}\",");
+        sb.Append($"\"isVip\":{(session.IsVip ? "true" : "false")},");
+        sb.Append($"\"vipLevel\":{session.VipLevel},");
+        sb.Append($"\"musicLevel\":{session.MusicLevel}");
+        sb.Append("},");
         string streamUrl = "";
-        if (AudioOutputEnabled && !string.IsNullOrEmpty(CurrentPlayUrl))
+        if (!RemoteControlOnly && AudioOutputEnabled && !string.IsNullOrEmpty(CurrentPlayUrl))
         {
             bool isWebDav = CurrentSong?.IsWebDav == true;
             bool hasCredentials = CurrentPlayUrl.Contains('@') &&

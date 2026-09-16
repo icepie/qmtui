@@ -214,12 +214,15 @@ public sealed class UserSession
                 finally
                 {
                     Interlocked.Exchange(ref s_saveScheduled, 0);
-                    var snapshot = s_pendingJsonSnapshot;
-                    if (!string.IsNullOrEmpty(snapshot))
+                    // Read the snapshot under the same lock Clear() uses to null it,
+                    // so a logout racing this write cannot resurrect the pre-logout
+                    // credentials back to disk.
+                    lock (s_fileWriteLock)
                     {
-                        try
+                        var snapshot = s_pendingJsonSnapshot;
+                        if (!string.IsNullOrEmpty(snapshot))
                         {
-                            lock (s_fileWriteLock)
+                            try
                             {
                                 if (!Directory.Exists(s_configDir))
                                 {
@@ -227,10 +230,10 @@ public sealed class UserSession
                                 }
                                 File.WriteAllText(s_configPath, snapshot);
                             }
-                        }
-                        catch
-                        {
-                            // 忽略写入异常
+                            catch
+                            {
+                                // 忽略写入异常
+                            }
                         }
                     }
                 }
@@ -251,15 +254,23 @@ public sealed class UserSession
         VipExpireAt = "";
         Cookies.Clear();
 
-        try
+        // Drop any pending debounced snapshot and delete the file under the
+        // same lock the debounced writer uses. A snapshot captured before
+        // logout must not be written back ~15s later, or the session would
+        // resurrect on the next start.
+        lock (s_fileWriteLock)
         {
-            if (File.Exists(s_configPath))
+            s_pendingJsonSnapshot = null;
+            try
             {
-                File.Delete(s_configPath);
+                if (File.Exists(s_configPath))
+                {
+                    File.Delete(s_configPath);
+                }
             }
-        }
-        catch
-        {
+            catch
+            {
+            }
         }
     }
 

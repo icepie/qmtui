@@ -7,7 +7,12 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "include": ["www/**"]
+    "include": [
+      "web/browser/**/*.js",
+      "web/browser/**/*.css",
+      "scripts/*.mjs",
+      "tests/web/*.mjs"
+    ]
   },
   "formatter": {
     "enabled": true,
