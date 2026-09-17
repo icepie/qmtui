@@ -102,6 +102,16 @@ public sealed partial class MainWindow
 
     private void AttachWebServerEvents(WebPlaybackServer server)
     {
+        // 收藏集合（mid/id）供网页逐首渲染“喜欢”状态；未完成预热前返回 null，前端会稍后重试。
+        server.FavoriteKeysProvider = () =>
+        {
+            if (!_favoriteKeysReady) return null;
+            lock (_favoriteSongMids)
+            {
+                return ([.. _favoriteSongMids], [.. _favoriteSongIds]);
+            }
+        };
+
         server.NextRequested += () => Application.Invoke(async () =>
         {
             if (_currentViewMode == ViewMode.GuessRecommend)

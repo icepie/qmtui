@@ -101,6 +101,24 @@ public sealed partial class WebPlaybackServer
         await SendLibraryJsonAsync(stream, new WebLibrarySongsResponse("我喜欢", page, result.Songs, result.HasMore, result.Total), ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// 返回收藏歌曲的 mid/id 集合（读宿主常驻内存，不请求服务端），供前端逐首渲染“喜欢”状态。
+    /// </summary>
+    private async Task HandleFavoriteKeysAsync(NetworkStream stream, CancellationToken ct)
+    {
+        if (!await RequireLoginAsync(stream, ct).ConfigureAwait(false)) return;
+
+        var keys = FavoriteKeysProvider?.Invoke();
+        if (keys == null)
+        {
+            // 集合仍在预热：明确回 503 让前端稍后重试，避免把不完整的集合当成“这些歌都没收藏”。
+            await SendResponseAsync(stream, 503, "Service Unavailable", "application/json", "{\"error\":\"favorite keys not synced yet\"}", ct).ConfigureAwait(false);
+            return;
+        }
+
+        await SendLibraryJsonAsync(stream, new WebFavoriteKeysResponse(keys.Value.Mids, keys.Value.Ids), ct).ConfigureAwait(false);
+    }
+
 
     private static async Task HandleLibraryPlaylistsAsync(NetworkStream stream, CancellationToken ct)
     {
@@ -546,6 +564,8 @@ public sealed partial class WebPlaybackServer
     }
     private static Task SendLibraryJsonAsync(NetworkStream stream, WebLibrarySongsResponse value, CancellationToken ct) =>
         SendLibraryJsonAsync(stream, value, WebLibraryJsonContext.Default.WebLibrarySongsResponse, ct);
+    private static Task SendLibraryJsonAsync(NetworkStream stream, WebFavoriteKeysResponse value, CancellationToken ct) =>
+        SendLibraryJsonAsync(stream, value, WebLibraryJsonContext.Default.WebFavoriteKeysResponse, ct);
     private static Task SendLibraryJsonAsync(NetworkStream stream, WebLibraryPlaylistsResponse value, CancellationToken ct) =>
         SendLibraryJsonAsync(stream, value, WebLibraryJsonContext.Default.WebLibraryPlaylistsResponse, ct);
     private static Task SendLibraryJsonAsync(NetworkStream stream, WebLibraryAlbumsResponse value, CancellationToken ct) =>
@@ -561,6 +581,7 @@ public sealed partial class WebPlaybackServer
 }
 
 internal sealed record WebLibrarySongsResponse(string Title, int Page, List<Song> Songs, bool HasMore, int Total = 0);
+internal sealed record WebFavoriteKeysResponse(List<string> Mids, List<long> Ids);
 internal sealed record WebLibraryPlaylistsResponse(List<Playlist> Playlists, bool HasMore);
 internal sealed record WebLibraryAlbumsResponse(List<Album> Albums, bool HasMore);
 internal sealed record WebLibrarySingersResponse(List<SingerSummary> Singers, bool HasMore);
@@ -580,6 +601,7 @@ internal sealed record WebMutationResponse(bool Ok, string Message, long Id);
 [JsonSerializable(typeof(WebSingerFavoriteRequest))]
 [JsonSerializable(typeof(WebSingerFavoriteResponse))]
 [JsonSerializable(typeof(WebLibrarySongsResponse))]
+[JsonSerializable(typeof(WebFavoriteKeysResponse))]
 [JsonSerializable(typeof(WebLibraryPlaylistsResponse))]
 [JsonSerializable(typeof(WebLibraryAlbumsResponse))]
 [JsonSerializable(typeof(WebLibrarySingersResponse))]

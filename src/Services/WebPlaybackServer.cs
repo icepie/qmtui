@@ -128,6 +128,12 @@ public sealed partial class WebPlaybackServer : IDisposable
     public int Volume { get; set; } = 80;
     public bool AudioOutputEnabled { get; set; } = true;
     public bool IsCurrentSongFavorite { get; set; }
+
+    /// <summary>
+    /// 收藏歌曲 mid/id 集合的提供者（由宿主在集合锁内复制一份）；返回 null 表示尚未同步完成，
+    /// 此时不对外暴露，避免前端把“还没拉到”当成“未收藏”。行内“喜欢”状态依据这份集合渲染。
+    /// </summary>
+    public Func<(List<string> Mids, List<long> Ids)?>? FavoriteKeysProvider { get; set; }
     public PlaybackMode CurrentPlaybackMode { get; set; } = PlaybackMode.ListLoop;
     public AudioQualityTier PreferredQualityTier { get; set; } = AudioQualityTier.SQ;
     public AudioQualityTier ActualQualityTier { get; set; } = AudioQualityTier.SQ;
@@ -402,6 +408,10 @@ public sealed partial class WebPlaybackServer : IDisposable
                 else if (path == "/api/library/favorites/songs")
                 {
                     await HandleFavoriteSongsAsync(stream, rawPath, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/library/favorites/ids")
+                {
+                    await HandleFavoriteKeysAsync(stream, ct).ConfigureAwait(false);
                 }
                 else if (path == "/api/library/playlists")
                 {

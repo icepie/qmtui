@@ -125,6 +125,9 @@ public sealed partial class MainWindow : Window
     private readonly HashSet<string> _favoriteSongMids = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<long> _favoriteSongIds = [];
 
+    /// <summary>启动时全量预热收藏集合是否已完成；未完成时不对外暴露（避免把“还没同步到”当成“未收藏”）。</summary>
+    private volatile bool _favoriteKeysReady;
+
     private int _currentFocusedWindowIndex = 1;
     private bool _sidebarClickInEmptyArea;
     private int _favoriteCurrentPage = 1;
@@ -1100,28 +1103,39 @@ public sealed partial class MainWindow : Window
         SetFocusToWindow(0);
         AudioPreRollManager.EnsureStarted();
 
-        // 后台预热收藏曲目 ID 缓存，用于更新收藏状态
+        // 后台预热收藏曲目 ID 缓存：必须逐页拉全，行内“喜欢”状态依赖这套集合完整
+        // （只预热首页会让排在后面的收藏在网页上显示成未收藏）。
         if (UserSession.Current.IsLoggedIn)
         {
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    var favRes = await MusicApi.GetFavoriteSongsAsync(1, 200);
-                    lock (_favoriteSongMids)
+                    // 上限仅作保护，正常由 HasMore 收尾（1470 首 ≈ 8 次请求）。
+                    for (int page = 1; page <= 100; page++)
                     {
-                        foreach (var s in favRes.Songs)
+                        var favRes = await MusicApi.GetFavoriteSongsAsync(page, MusicApi.MaxSongPageSize);
+                        lock (_favoriteSongMids)
                         {
-                            if (!string.IsNullOrEmpty(s.Mid)) _favoriteSongMids.Add(s.Mid);
-                            if (s.Id > 0) _favoriteSongIds.Add(s.Id);
+                            foreach (var s in favRes.Songs)
+                            {
+                                if (!string.IsNullOrEmpty(s.Mid)) _favoriteSongMids.Add(s.Mid);
+                                if (s.Id > 0) _favoriteSongIds.Add(s.Id);
+                            }
                         }
+                        if (!favRes.HasMore) break;
                     }
+
+                    _favoriteKeysReady = true;
+
                     if (_activeSong != null)
                     {
                         var isFav = (!string.IsNullOrEmpty(_activeSong.Mid) && _favoriteSongMids.Contains(_activeSong.Mid)) ||
                                     (_activeSong.Id > 0 && _favoriteSongIds.Contains(_activeSong.Id));
                         Application.Invoke(() => _controlBar.SetFavoriteStatus(isFav));
                     }
+
+                    _standaloneWebServer?.BroadcastState("favorites_synced");
                 }
                 catch (Exception ex)
                 {

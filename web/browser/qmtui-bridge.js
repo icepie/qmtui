@@ -9,6 +9,64 @@ import { state } from './bridge/state.js';
   if (window.__qmtuiBridgeInstalled) return;
   window.__qmtuiBridgeInstalled = true;
 
+  /** 该歌曲是否在收藏集合里（mid 与 id 任一命中即算；集合未就绪时返回 false，由调用方决定回退）。 */
+  function isFavoriteSong(song) {
+    if (!song) return false;
+    const mid = song.mid ? String(song.mid) : '';
+    const id = Number(song.id) > 0 ? String(song.id) : '';
+    return (mid !== '' && state.favoriteKeys.has(mid)) || (id !== '' && state.favoriteKeys.has(id));
+  }
+
+  /** 播放态或喜欢操作改变后，同步本地键集合，保持行心形与服务端一致。 */
+  function syncFavoriteKey(song, isFavorite) {
+    if (!state.favoriteKeysLoaded || !song) return;
+    const keys = [song.mid ? String(song.mid) : '', Number(song.id) > 0 ? String(song.id) : ''];
+    for (const key of keys) {
+      if (!key) continue;
+      if (isFavorite) state.favoriteKeys.add(key);
+      else state.favoriteKeys.delete(key);
+    }
+  }
+
+  /** 已渲染列表的心形就地刷新（原生按 singer[]/行顺序渲染，行与歌曲下标一一对应）。 */
+  function refreshLoveMarks() {
+    const list = state.lastList;
+    if (!list || !state.favoriteKeysLoaded) return;
+    const rows = [...list.host.querySelectorAll('.songlist__item')];
+    rows.forEach((row, index) => {
+      const song = list.songs[index];
+      const icon = row.querySelector('.songlist__icon_love');
+      if (!song || !icon) return;
+      song.like = isFavoriteSong(song);
+      icon.classList.toggle('loved', song.like);
+    });
+  }
+
+  /**
+   * 拉取收藏集合（后端直接读常驻内存，不请求 QQ）。集合预热完成前后端回 503，
+   * 此时按固定间隔重试；`favorites_synced` 播放态事件到达时也会立刻重试一次。
+   */
+  async function ensureFavoriteKeys(force = false) {
+    if (state.favoriteKeysLoaded && !force) return;
+    state.favoriteKeysAttempts += 1;
+    try {
+      const result = await api('/api/library/favorites/ids');
+      state.favoriteKeys = new Set(
+        [...(result.mids || []), ...(result.ids || [])].map((key) => String(key))
+      );
+      state.favoriteKeysLoaded = true;
+      state.favoriteKeysAttempts = 0;
+      clearTimeout(state.favoriteKeysTimer);
+      state.favoriteKeysTimer = null;
+      refreshLoveMarks();
+    } catch {
+      // 预热未完成（503）或后端未提供时静默重试，避免刷提示。
+      if (state.favoriteKeysAttempts >= 40) return;
+      clearTimeout(state.favoriteKeysTimer);
+      state.favoriteKeysTimer = setTimeout(() => ensureFavoriteKeys(), 2000);
+    }
+  }
+
   function toQqSong(song, liked = false) {
     const mapped = mapSong(song);
     const duration = Number(mapped.duration) || 0;
@@ -57,6 +115,8 @@ import { state } from './bridge/state.js';
       isLocal: false,
       lyrics: Array.isArray(song.lyrics) ? song.lyrics : [],
     };
+    // 收藏集合就绪后逐首按真实收藏态渲染心形；未就绪时沿用调用方给的列表级标记（如“我喜欢”页）。
+    if (state.favoriteKeysLoaded) value.like = isFavoriteSong(value);
     state.songs.set(keyOf(value), value);
     if (value.id) state.songs.set(String(value.id), value);
     return value;
@@ -204,6 +264,17 @@ import { state } from './bridge/state.js';
   }
 
   function applyState(remote) {
+    if (remote.type === 'favorites_synced') {
+      // 后端全量预热完成：此前收藏集合接口一直回 503，这里立刻补拉一次。
+      ensureFavoriteKeys(true);
+    }
+    // 当前歌曲的收藏态变化时同步键集合并就地刷新可见列表的心形。
+    const favoriteSignature = `${keyOf(remote.song)}:${Boolean(remote.isFavorite)}`;
+    if (favoriteSignature !== state.lastFavoriteSignature) {
+      state.lastFavoriteSignature = favoriteSignature;
+      syncFavoriteKey(remote.song, Boolean(remote.isFavorite));
+      refreshLoveMarks();
+    }
     if (state.pendingFavoriteState !== null && remote.type === 'favorite_result') {
       if (Boolean(remote.isFavorite) === state.pendingFavoriteState) {
         showToast(remote.isFavorite ? '已添加到我喜欢' : '已取消喜欢');
@@ -797,7 +868,11 @@ import { state } from './bridge/state.js';
         },
       })
     );
-    setTimeout(() => bindSongRows(host, nativeSongs, options), 0);
+    setTimeout(() => {
+      bindSongRows(host, nativeSongs, options);
+      state.lastList = { host, songs: nativeSongs };
+      refreshLoveMarks();
+    }, 0);
   }
 
   function bindSongRows(host, songs, options) {
@@ -2433,6 +2508,7 @@ import { state } from './bridge/state.js';
     api('/api/account')
       .then(renderAccount)
       .catch(() => {});
+    ensureFavoriteKeys();
     handleRoute();
   }
 

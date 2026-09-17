@@ -25,6 +25,12 @@
  *   account: Record<string, unknown> | null;
  *   pendingFavoriteState: boolean | null;
  *   favoriteResultTimer: ReturnType<typeof setTimeout> | null;
+ *   favoriteKeys: Set<string>;
+ *   favoriteKeysLoaded: boolean;
+ *   favoriteKeysAttempts: number;
+ *   favoriteKeysTimer: ReturnType<typeof setTimeout> | null;
+ *   lastFavoriteSignature: string;
+ *   lastList: { host: Element; songs: import('./media.js').SongPayload[] } | null;
  *   runtime: unknown;
  *   playlists: Map<string, Record<string, unknown>>;
  *   albums: Map<string, import('./media.js').AlbumPayload>;
@@ -57,6 +63,12 @@ export const state = {
   account: null,
   pendingFavoriteState: null,
   favoriteResultTimer: null,
+  favoriteKeys: new Set(),
+  favoriteKeysLoaded: false,
+  favoriteKeysAttempts: 0,
+  favoriteKeysTimer: null,
+  lastFavoriteSignature: '',
+  lastList: null,
   runtime: null,
   playlists: new Map(),
   albums: new Map(),
