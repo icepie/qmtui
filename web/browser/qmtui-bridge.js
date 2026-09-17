@@ -12,11 +12,17 @@ import { state } from './bridge/state.js';
   function toQqSong(song, liked = false) {
     const mapped = mapSong(song);
     const duration = Number(mapped.duration) || 0;
+    // 原生 SongList 直接渲染 songInfo.playTime（见 recovered song_list/index.tsx），需 mm:ss 字符串。
+    const playTime = duration
+      ? `${String(Math.floor(duration / 60)).padStart(2, '0')}:${String(duration % 60).padStart(2, '0')}`
+      : '';
     const cover = songCover(mapped, 500);
-    const singers = String(mapped.artist || '未知歌手')
-      .split('/')
-      .filter(Boolean)
-      .map((name) => ({ name, title: name }));
+    const singers = Array.isArray(mapped.singers) && mapped.singers.length
+      ? mapped.singers.map((s) => ({ name: s.name, title: s.name, mid: s.mid || '', id: s.id || 0 }))
+      : String(mapped.artist || '未知歌手')
+          .split('/')
+          .filter(Boolean)
+          .map((name) => ({ name, title: name }));
     const value = {
       id: Number(mapped.id) || 0,
       mid: mapped.mid || '',
@@ -35,6 +41,7 @@ import { state } from './bridge/state.js';
       albumMid: mapped.albumMid || '',
       interval: duration,
       duration,
+      playTime,
       file: { media_mid: mapped.mediaMid || mapped.mid || '', size_128mp3: 1 },
       action: { play: 1, fav: 1, share: 1 },
       url: '',
@@ -125,6 +132,8 @@ import { state } from './bridge/state.js';
       SongList: requireModule(57224).J,
       PlaylistList: requireModule(22865).Z,
       AlbumList: requireModule(70025).Z,
+      // 原生歌曲右键菜单（recovered context_menu）：A=showMenu(ev, extraData, config)
+      showSongMenu: requireModule(77365).A,
     };
     patchOriginalAccountActions();
     return state.runtime;
@@ -133,35 +142,16 @@ import { state } from './bridge/state.js';
   const attach = (logicalPlayer) =>
     attachPlayer(logicalPlayer, { applyState, showToast, toggleFavorite });
 
-  function visibleElement(selector) {
-    return [...document.querySelectorAll(selector)].find((element) => {
-      const rect = element.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0;
-    });
-  }
-
-  function formatTime(seconds) {
-    const value = Math.max(0, Math.floor(Number(seconds) || 0));
-    return `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`;
-  }
-
-  function renderProgress(position, duration) {
+  function emitProgress(position, duration) {
+    if (!state.player) return;
+    const safePosition = Math.max(0, Number(position) || 0);
     const safeDuration = Math.max(0, Number(duration) || 0);
-    const safePosition = Math.max(
-      0,
-      Math.min(Number(position) || 0, safeDuration || Number.POSITIVE_INFINITY)
-    );
-    const percent = safeDuration > 0 ? Math.min(100, (safePosition / safeDuration) * 100) : 0;
-    const current = visibleElement('.player_time_cur');
-    const total = visibleElement('.player_time_total');
-    const played = visibleElement('.player_process_cent');
-    const buffered = visibleElement('.player_process_buffer');
-    const dot = visibleElement('.player_process_dot');
-    if (current) current.textContent = formatTime(safePosition);
-    if (total) total.textContent = formatTime(safeDuration);
-    if (played) played.style.width = `${percent}%`;
-    if (buffered) buffered.style.width = `${percent}%`;
-    if (dot) dot.style.left = `${percent}%`;
+    state.player.trigger('timeupdate', {
+      timeStamp: safePosition,
+      duration: safeDuration,
+      buffered: safePosition,
+      song: state.player.currentSong,
+    });
   }
 
   function startProgressTicker() {
@@ -171,7 +161,7 @@ import { state } from './bridge/state.js';
       const elapsed = state.remote.isPlaying
         ? Math.max(0, (performance.now() - state.progressAnchorTime) / 1000)
         : 0;
-      renderProgress(
+      emitProgress(
         state.progressAnchorPosition + elapsed,
         state.currentDuration || state.remote.duration
       );
@@ -275,11 +265,36 @@ import { state } from './bridge/state.js';
         state.currentSongKey = songKey;
         state.currentDuration = duration;
         state.currentLyricSignature = lyricSignature;
-        if (metadataChanged) {
+
+        const queueKey = (remote.songList || []).map((s) => keyOf(s)).join('|');
+        const queueChanged = queueKey !== state.currentQueueKey;
+        if (metadataChanged || queueChanged) {
+          state.currentQueueKey = queueKey;
           state.player.currentSong = song;
-          state.player.songList = [song];
-          state.player.playList = state.player.songList;
-          state.player.index = 0;
+          const queue = (remote.songList || []).length
+            ? remote.songList.map((s) =>
+                keyOf(s) === songKey
+                  ? song
+                  : toQqSong({ ...s, duration: Number(s.duration) || 0 }, false)
+              )
+            : [song];
+          state.player.songList = queue;
+          state.player.playList = queue;
+          state.player.index = Number.isInteger(remote.currentIndex)
+            ? remote.currentIndex
+            : queue.findIndex((s) => s.mid === song.mid);
+          if (state.player.index < 0) state.player.index = 0;
+          // Native queue panel reads PlayingStore, whose songList only updates
+          // on PLAYING events (PAUSED carries no list). Sync it directly so the
+          // full queue renders even while paused.
+          const store = state.runtime && state.runtime.store;
+          if (store && typeof store.JG === 'function') {
+            store.JG('PlayingStore', {
+              songOnPlaying: remote.isPlaying ? song : null,
+              songOnPause: remote.isPlaying ? null : song,
+              songList: queue,
+            });
+          }
         }
       }
       const mode = modeToQq[remote.mode];
@@ -295,7 +310,6 @@ import { state } from './bridge/state.js';
       state.progressAnchorPosition = position;
       state.progressAnchorTime = performance.now();
       state.remote = remote;
-      renderProgress(position, duration);
       if (state.player.audio && Math.abs((state.player.audio.currentTime || 0) - position) > 0.35) {
         try {
           state.player.audio.currentTime = position;
@@ -431,6 +445,7 @@ import { state } from './bridge/state.js';
               iVipFlag: account.isVip ? 1 : 0,
               iSuperVip: account.isVip ? 1 : 0,
               iCurLevel: Number(account.vipLevel) || 0,
+              vip: account.isVip ? 1 : 0,
               ieight: 0,
             }
           : null,
@@ -777,25 +792,46 @@ import { state } from './bridge/state.js';
       row.ondblclick = play;
       const playButton = row.querySelector('.songname_menu__play');
       if (playButton) playButton.onclick = play;
+      // 原生按 singer[] 顺序渲染每个歌手名 anchor，故下标一一对应，可精确取到 mid。
+      const authorLinks = [...row.querySelectorAll('.songlist__author a')];
+      authorLinks.forEach((authorLink, singerIndex) => {
+        authorLink.classList.add('qmtui-singer-link');
+        authorLink.onclick = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const list = Array.isArray(song.singer) ? song.singer : [];
+          const entry = list[singerIndex];
+          const label = (authorLink.getAttribute('title') || authorLink.textContent || '').trim();
+          const mid = entry?.mid || '';
+          const name = (entry?.name || label.split('/')[0] || '').trim();
+          if (!mid && !name) return;
+          const target = mid
+            ? `mid=${encodeURIComponent(mid)}`
+            : `name=${encodeURIComponent(name)}`;
+          getRuntime()?.history.push(`/singer_detail?${target}`);
+        };
+      });
       const addButton = row.querySelector('.songname_menu__add');
-      if (addButton) addButton.onclick = () => choosePlaylistForSong(song);
-      const menu = row.querySelector('.mod_songname_menu');
-      if (menu) {
-        const comment = document.createElement('a');
-        comment.className = 'songname_menu__item c_txt_thin qmtui-extra-action';
-        comment.textContent = '评论';
-        comment.title = '评论';
-        comment.onclick = () => openSongComments(song);
-        menu.append(comment);
-        if (options.playlist && !options.playlist.isFav && options.playlist.dirId > 0) {
-          const remove = document.createElement('a');
-          remove.className = 'songname_menu__item c_txt_thin qmtui-extra-action';
-          remove.textContent = '移除';
-          remove.title = '从歌单移除';
-          remove.onclick = () => removeSongFromPlaylist(options.playlist, song);
-          menu.append(remove);
-        }
+      if (addButton) addButton.onclick = () => openSongContextMenu({}, song, songs, index, options);
+      // 行内 ⋯ 入口（与播放栏同款图标）：点开原生菜单。桌面也可直接右键；触屏/发现性靠这个。
+      const menuHost = row.querySelector('.songlist_name__icon') || row.querySelector('.songlist__songname');
+      if (menuHost) {
+        const more = document.createElement('a');
+        more.className = 'qmtui-row-menu';
+        more.title = '更多操作';
+        more.setAttribute('role', 'button');
+        more.onclick = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openSongContextMenu(event, song, songs, index, options);
+        };
+        menuHost.append(more);
       }
+      row.oncontextmenu = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openSongContextMenu(event, song, songs, index, options);
+      };
     });
   }
 
@@ -811,52 +847,81 @@ import { state } from './bridge/state.js';
     }
   }
 
-  async function choosePlaylistForSong(song) {
+  // 复用原生歌曲右键菜单（recovered context_menu.showMenu）。菜单项全部是原生实现：
+  //  播放 → 原生 player.playAll；查看评论 → jump(PAGE_TYPE.SONG)；
+  //  添加到 → addPlaylistMenu 读 store.SelfCreatePlayList，落库走 ufetch(addSongsToPlayList)
+  //          → 后端 /api/browser/ufetch；下载 → ipc('download-song-file') → /api/download；
+  //  删除 → deleteSongsInPlayList → ufetch → 后端；复制信息/分享 → 剪贴板。
+  // 传整个列表 + 行下标，让「播放」按原生语义播放整列；songOnSelected 只放当前首，使完整菜单项展开。
+  // 可写入的自建歌单：排除特殊集合「我喜欢」(201)、「最近播放」(202) 与外部收藏歌单。
+  function isWritablePlaylist(playlist) {
+    if (!playlist) return false;
+    const dirId = Number(playlist.dirId) || 0;
+    return dirId > 0 && dirId !== 201 && dirId !== 202 && !playlist.isFav;
+  }
+
+  // 在原生右键菜单里追加队列两项。DiyMenu 直接用 setState({menuContentData}) 渲染，
+  // 所以跟着往 state 追加即可被原生样式渲染并扛住后续 re-render（直接插 DOM 会被冲掉）。
+  function appendQueueMenuItems(song) {
+    const runtime = getRuntime();
+    const menu = runtime?.require?.(90658)?.current;
+    const current = menu?.state?.menuContentData;
+    if (!menu?.setState || !Array.isArray(current) || current.some((item) => item?.qmtuiQueueItem)) return;
+
+    const queueAction = (next) => () =>
+      post('/api/queue/add', { song: mapSong(song), next })
+        .then(() => showToast(next ? '已设为下一首播放' : '已加入播放队列'))
+        .catch((error) => showToast(error.message, true));
+
+    menu.setState({
+      menuContentData: [
+        ...current,
+        { text: '下一首播放', iconClass: 'operate_menu__icon_play', fn: queueAction(true), qmtuiQueueItem: true },
+        { text: '添加到播放队列', iconClass: 'operate_menu__icon_add', fn: queueAction(false), qmtuiQueueItem: true },
+      ],
+    });
+  }
+
+  function openSongContextMenu(event, song, songs, index, options = {}) {
+    const runtime = getRuntime();
+    if (!runtime?.showSongMenu) return;
+    const playlist = options.playlist;
+    // 「删除」只在可写入的自建歌单出现。
+    const removable = isWritablePlaylist(playlist);
     try {
-      const result = await api('/api/library/playlists');
-      const choices = (result.playlists || []).filter(
-        (item) => !item.isFav && Number(item.dirId) > 0 && Number(item.dirId) !== 201
+      runtime.showSongMenu(
+        event,
+        {
+          songList: Array.isArray(songs) && songs.length ? songs : [song],
+          songOnSelected: [song],
+          index: Number.isInteger(index) ? index : 0,
+          playListDetail: removable ? { dirid: Number(playlist.dirId) } : null,
+          eventListener: {
+            onDelete: () => options.onRemove && options.onRemove(),
+          },
+        },
+        { showDelete: Boolean(removable) }
       );
-      if (!choices.length) {
-        showToast('没有可写入的自建歌单', true);
-        return;
-      }
-      const selected = prompt(
-        `输入目标歌单序号：\n${choices.map((item, index) => `${index + 1}. ${item.name}`).join('\n')}`,
-        '1'
-      );
-      const playlist = choices[Number(selected) - 1];
-      if (!playlist) return;
-      await post('/api/library/playlist/song/add', { ...playlist, song: mapSong(song) });
-      showToast(`已加入：${playlist.name}`);
+      appendQueueMenuItems(song);
     } catch (error) {
       showToast(error.message, true);
     }
   }
 
-  async function removeSongFromPlaylist(playlist, song) {
-    if (!confirm(`确定从“${playlist.name}”移除“${song.title || song.name}”？`)) return;
-    try {
-      await post('/api/library/playlist/song/remove', { ...playlist, song: mapSong(song) });
-      showToast('已从歌单移除');
-      renderPlaylistRoute(playlist);
-    } catch (error) {
-      showToast(error.message, true);
-    }
-  }
-
-  function detailHeader({ image, title, subtitle, playAll, favorite, unfavorite }) {
+  function detailHeader({ image, title, subtitle, subtitleHtml, playAll, favorite, unfavorite, follow, unfollow }) {
     return `
       <div class="mod_detail album">
         <div class="detail__inner">
           <div class="detail__cover"><img src="${escapeHtml(image)}" alt="" class="detail__cover_pic"></div>
           <div class="detail__info">
             <h1 class="detail__title c_tx_normal">${escapeHtml(title)}</h1>
-            <div class="mod_detail_about c_tx_thin"><div class="detail__para">${escapeHtml(subtitle || '')}</div></div>
+            <div class="mod_detail_about c_tx_thin"><div class="detail__para">${subtitleHtml || escapeHtml(subtitle || '')}</div></div>
             <div class="mod_detail_operation qmtui-detail-actions">
               <a class="mod_btn c_btn_skin" data-detail-action="play"><span class="btn__cover"></span><span class="btn__txt">播放全部</span></a>
               ${favorite ? '<a class="mod_btn c_btn" data-detail-action="favorite"><span class="btn__cover"></span><span class="btn__txt">收藏</span></a>' : ''}
               ${unfavorite ? '<a class="mod_btn c_btn" data-detail-action="unfavorite"><span class="btn__cover"></span><span class="btn__txt">取消收藏</span></a>' : ''}
+              ${follow ? '<a class="mod_btn c_btn" data-detail-action="follow"><span class="btn__cover"></span><span class="btn__txt">关注</span></a>' : ''}
+              ${unfollow ? '<a class="mod_btn c_btn" data-detail-action="unfollow"><span class="btn__cover"></span><span class="btn__txt">已关注</span></a>' : ''}
             </div>
           </div>
         </div>
@@ -887,36 +952,126 @@ import { state } from './bridge/state.js';
     const host = createRouteHost();
     if (!host) return;
     host.innerHTML = '<div class="qmtui-loading">正在加载歌单…</div>';
-    try {
+
+    const id = playlist.tid || playlist.id || playlist.dirId;
+    const dirId = Number(playlist.dirId) || 0;
+    const commentsActive = location.hash.includes('/comment');
+
+    const fetchPage = async (page) => {
       const result = await api(
         `/api/library/playlist?${query({
           dirId: playlist.dirId,
           tid: playlist.tid,
           isFav: playlist.isFav,
           name: playlist.name,
+          page,
         })}`
       );
+      return token === state.routeToken ? result : null;
+    };
+
+    try {
+      const first = await fetchPage(1);
+      if (!first) return;
+      const songsState = {
+        items: first.songs || [],
+        page: 1,
+        hasMore: !!first.hasMore,
+        loading: false,
+      };
+
+      // playlist.isFav 语义重载：/api/library/playlists 里 true=外部收藏歌单、false=自建歌单，
+      // 而搜索结果一律置 true。故“可收藏”只排除「我喜欢」与自建歌单，其余以 IsPlaylistFan 实测为准。
+      const canFavorite = Number(id) > 0 && dirId !== 201 && !(dirId > 0 && !playlist.isFav);
+      const favoriteState = canFavorite
+        ? await api(`/api/library/playlist/favorite?tid=${encodeURIComponent(id)}`)
+        : { isFavorite: false };
       if (token !== state.routeToken) return;
-      const songs = result.songs || [];
-      const id = playlist.tid || playlist.id || playlist.dirId;
-      const commentsActive = location.hash.includes('/comment');
-      host.innerHTML = `<div class="layout_detail column_flex playlist_detail">
-        ${detailHeader({
-          image: playlist.picUrl || playlist.picurl || songCover(songs[0]),
+      const isFavorite = Boolean(favoriteState.isFavorite);
+
+      const headerHtml = (fav) =>
+        detailHeader({
+          image: playlist.picUrl || playlist.picurl || songCover(songsState.items[0]),
           title: playlist.name,
-          subtitle: `${songs.length || playlist.songCount || 0} 首歌曲`,
+          subtitle: `${songsState.items.length}${songsState.hasMore ? '+' : ''} 首歌曲`,
           playAll: true,
-        })}
+          favorite: canFavorite && !fav,
+          unfavorite: canFavorite && fav,
+        });
+
+      host.innerHTML = `<div class="layout_detail column_flex playlist_detail">
+        ${headerHtml(isFavorite)}
         ${detailTabs(`#/playlist_detail/${id}`, `#/playlist_detail/${id}/comment`, commentsActive)}
         <div class="main_cont song" id="qmtui-detail-body"></div>
       </div>`;
-      host.querySelector('[data-detail-action="play"]').onclick = () => {
-        if (songs.length) playSong(songs[0], songs);
-      };
       const body = host.querySelector('#qmtui-detail-body');
+
+      const renderList = () => {
+        clearRenderedContent(body);
+        if (!songsState.items.length) {
+          body.innerHTML = '<div class="qmtui-empty">歌单里没有歌曲</div>';
+          return;
+        }
+        // options.playlist 使右键菜单给出原生「删除」；onRemove 删除成功后只刷新列表，避免整页重载丢分页。
+        renderSongList(body, songsState.items, { playlist, onRemove: reloadSongs });
+      };
+
+      // 移除后重新拉第一页：歌单可能因此变短，直接重置分页状态最稳。
+      async function reloadSongs() {
+        const result = await fetchPage(1);
+        if (!result) return;
+        songsState.items = result.songs || [];
+        songsState.page = 1;
+        songsState.hasMore = !!result.hasMore;
+        renderList();
+        const header = host.querySelector('.mod_detail.album');
+        if (header) header.outerHTML = headerHtml(isFavorite);
+        rebindHeader();
+      }
+
+      const loadMore = async () => {
+        if (songsState.loading || !songsState.hasMore) return;
+        songsState.loading = true;
+        try {
+          const result = await fetchPage(songsState.page + 1);
+          if (!result) return;
+          songsState.items = songsState.items.concat(result.songs || []);
+          songsState.page += 1;
+          songsState.hasMore = !!result.hasMore;
+          renderList();
+        } catch (error) {
+          showToast(error.message, true);
+        } finally {
+          songsState.loading = false;
+        }
+      };
+
+      const updateFavorite = async (favorite) => {
+        await post('/api/library/playlist/favorite', { tid: Number(id), favorite });
+        showToast(favorite ? '歌单已收藏' : '已取消收藏');
+        await refreshLibrary();
+        renderPlaylistRoute(playlist);
+      };
+
+      function rebindHeader() {
+        const playButton = host.querySelector('[data-detail-action="play"]');
+        if (playButton) playButton.onclick = () => {
+          if (songsState.items.length) playSong(songsState.items[0], songsState.items);
+        };
+        const favoriteButton = host.querySelector('[data-detail-action="favorite"]');
+        const unfavoriteButton = host.querySelector('[data-detail-action="unfavorite"]');
+        if (favoriteButton) favoriteButton.onclick = () => updateFavorite(true).catch((error) => showToast(error.message, true));
+        if (unfavoriteButton) unfavoriteButton.onclick = () => updateFavorite(false).catch((error) => showToast(error.message, true));
+      }
+
+      rebindHeader();
+
+      body.addEventListener('scroll', () => {
+        if (body.scrollHeight - body.scrollTop - body.clientHeight < 400) loadMore();
+      });
+
       if (commentsActive) renderComments(body, Number(id), 3);
-      else if (songs.length) renderSongList(body, songs, { playlist });
-      else body.innerHTML = '<div class="qmtui-empty">歌单里没有歌曲</div>';
+      else renderList();
     } catch (error) {
       host.innerHTML = `<div class="qmtui-empty">${escapeHtml(error.message)}</div>`;
     }
@@ -937,7 +1092,13 @@ import { state } from './bridge/state.js';
         ${detailHeader({
           image: albumCover(album),
           title: detail.name,
-          subtitle: [detail.artist, detail.publishDate, detail.company].filter(Boolean).join(' · '),
+          subtitleHtml: [
+            singerLinks(detail.artist),
+            detail.publishDate ? escapeHtml(detail.publishDate) : '',
+            detail.company ? escapeHtml(detail.company) : '',
+          ]
+            .filter(Boolean)
+            .join(' · '),
           playAll: true,
           favorite: true,
           unfavorite: true,
@@ -966,6 +1127,265 @@ import { state } from './bridge/state.js';
       if (commentsActive) renderComments(body, Number(album.id), 2);
       else if (songs.length) renderSongList(body, songs);
       else body.innerHTML = '<div class="qmtui-empty">专辑里没有歌曲</div>';
+    } catch (error) {
+      host.innerHTML = `<div class="qmtui-empty">${escapeHtml(error.message)}</div>`;
+    }
+  }
+
+  function singerCover(mid) {
+    return mid
+      ? `https://y.qq.com/music/photo_new/T001R300x300M000${encodeURIComponent(mid)}.jpg?max_age=2592000`
+      : '';
+  }
+
+  // 把 "A/B" 形态的歌手串渲染为可点击链接（点击由 bindOriginalUi 的委托监听处理）。
+  function singerLinks(text) {
+    return String(text || '')
+      .split('/')
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map(
+        (name) =>
+          `<a class="qmtui-singer-link" data-singer-name="${escapeHtml(name)}">${escapeHtml(name)}</a>`
+      )
+      .join(' / ');
+  }
+
+  // 歌手搜索结果没有原生列表组件（recovered 里只有歌单/专辑/歌曲列表），故用卡片网格渲染。
+  function renderSingerCards(container, singers) {
+    container.innerHTML = `<div class="qmtui-card-grid">${singers
+      .map((s) => {
+        const cover = s.picUrl || singerCover(s.mid);
+        const meta = s.songCount ? `${s.songCount} 首歌` : '';
+        return `<div class="qmtui-card" data-singer-mid="${escapeHtml(s.mid || '')}" data-singer-id="${Number(s.id) || 0}">
+            <div class="qmtui-card__cover qmtui-card__cover--round"><img src="${escapeHtml(cover)}" alt="" loading="lazy"></div>
+            <div class="qmtui-card__title c_tx_normal">${escapeHtml(s.name || '')}</div>
+            <div class="qmtui-card__subtitle c_tx_thin">${escapeHtml(meta)}</div>
+          </div>`;
+      })
+      .join('')}</div>`;
+    for (const node of container.querySelectorAll('[data-singer-mid]')) {
+      node.onclick = () => {
+        const mid = node.dataset.singerMid;
+        const id = Number(node.dataset.singerId) || 0;
+        if (!mid && !id) return;
+        const target = mid ? `mid=${encodeURIComponent(mid)}` : `id=${id}`;
+        getRuntime()?.history.push(`/singer_detail?${target}`);
+      };
+    }
+  }
+
+  async function renderSingerRoute({ mid, id, name }) {
+    const token = ++state.routeToken;
+    const host = createRouteHost();
+    if (!host) return;
+    host.innerHTML = '<div class="qmtui-loading">正在加载歌手…</div>';
+    try {
+      const detail = await api(`/api/singer/detail?${query({ mid, id, name })}`);
+      if (token !== state.routeToken) return;
+      const resolvedMid = detail.mid || mid || '';
+      const brief = String(detail.brief || '').replace(/\s+/g, ' ').trim();
+      const favoriteState = resolvedMid
+        ? await api(`/api/singer/favorite?mid=${encodeURIComponent(resolvedMid)}`)
+        : { isFavorite: false };
+      if (token !== state.routeToken) return;
+      let isFollowed = Boolean(favoriteState.isFavorite);
+
+      const headerHtml = (followed) =>
+        detailHeader({
+          image: singerCover(resolvedMid),
+          title: detail.name || '未知歌手',
+          subtitle: brief,
+          playAll: true,
+          follow: !followed,
+          unfollow: followed,
+        });
+
+      host.innerHTML = `<div class="layout_detail column_flex playlist_detail">
+        ${headerHtml(isFollowed)}
+        <nav class="mod_tab mod_normal_nav"><div class="layout_cont">
+          <a class="tab__item c_tx_normal c_tx_current" data-singer-tab="songs"><span class="tab__label">歌曲</span></a>
+          <a class="tab__item c_tx_normal" data-singer-tab="albums"><span class="tab__label">专辑</span></a>
+        </div></nav>
+        <div class="qmtui-singer-toolbar" id="qmtui-singer-toolbar"></div>
+        <div class="main_cont song" id="qmtui-detail-body"></div>
+      </div>`;
+      const body = host.querySelector('#qmtui-detail-body');
+
+      let activeTab = 'songs';
+      const songsState = { items: [], total: 0, order: 1, hasMore: true, loading: false, loaded: false };
+      const albumsState = { items: [], hasMore: true, loading: false, loaded: false };
+
+      // 关注歌手：本地集合，与 TUI 的 UserSession.FavoriteSingers 共用同一份持久化数据。
+      const toggleFollow = async (favorite) => {
+        try {
+          await post('/api/singer/favorite', { mid: resolvedMid, favorite });
+          isFollowed = favorite;
+          host.querySelector('.mod_detail.album').outerHTML = headerHtml(isFollowed);
+          bindHeader();
+          showToast(favorite ? '已关注该歌手' : '已取消关注');
+        } catch (error) {
+          showToast(error.message, true);
+        }
+      };
+
+      function bindHeader() {
+        const playButton = host.querySelector('[data-detail-action="play"]');
+        if (playButton) playButton.onclick = () => {
+          if (songsState.items.length) playSong(songsState.items[0], songsState.items);
+        };
+        const followButton = host.querySelector('[data-detail-action="follow"]');
+        const unfollowButton = host.querySelector('[data-detail-action="unfollow"]');
+        if (followButton) followButton.onclick = () => toggleFollow(true);
+        if (unfollowButton) unfollowButton.onclick = () => toggleFollow(false);
+      }
+
+      const renderToolbar = () => {
+        const bar = host.querySelector('#qmtui-singer-toolbar');
+        if (!bar) return;
+        if (activeTab !== 'songs') {
+          bar.classList.remove('qmtui-singer-toolbar--active');
+          bar.innerHTML = '';
+          return;
+        }
+        const s = songsState;
+        bar.classList.add('qmtui-singer-toolbar--active');
+        bar.innerHTML = `
+          <a class="qmtui-singer-order__item${s.order === 1 ? ' active' : ''}" data-singer-order="1">热门</a>
+          <a class="qmtui-singer-order__item${s.order === 0 ? ' active' : ''}" data-singer-order="0">最新</a>
+          <span class="qmtui-singer-order__count c_tx_thin">共 ${s.total || 0} 首</span>`;
+        for (const node of bar.querySelectorAll('[data-singer-order]')) {
+          node.onclick = () => {
+            const order = Number(node.dataset.singerOrder);
+            if (order === s.order) return;
+            s.order = order;
+            s.items = [];
+            s.total = 0;
+            s.hasMore = true;
+            s.loaded = false;
+            body.scrollTop = 0;
+            loadSongs(true);
+          };
+        }
+      };
+
+      const renderSongs = () => {
+        const s = songsState;
+        clearRenderedContent(body);
+        if (!s.loaded) {
+          body.innerHTML = '<div class="qmtui-loading">正在加载…</div>';
+          return;
+        }
+        if (!s.items.length) {
+          body.innerHTML = '<div class="qmtui-empty">暂无歌曲</div>';
+          return;
+        }
+        renderSongList(body, s.items);
+      };
+
+      const loadSongs = async (reset) => {
+        const s = songsState;
+        if (s.loading || (!reset && !s.hasMore)) return;
+        s.loading = true;
+        if (reset) renderSongs();
+        const begin = reset ? 0 : s.items.length;
+        try {
+          const result = await api(
+            `/api/singer/songs?${query({ mid: resolvedMid, begin, pageSize: 50, order: s.order })}`
+          );
+          if (token !== state.routeToken) return;
+          const page = result.songs || [];
+          s.items = reset ? page : s.items.concat(page);
+          s.total = Number(result.total) || s.items.length;
+          s.hasMore = !!result.hasMore;
+          s.loaded = true;
+          if (activeTab === 'songs') {
+            renderToolbar();
+            renderSongs();
+          }
+        } catch (error) {
+          if (token !== state.routeToken) return;
+          if (reset || s.items.length === 0) {
+            body.innerHTML = `<div class="qmtui-empty">${escapeHtml(error.message)}</div>`;
+          } else {
+            showToast(error.message, true);
+          }
+        } finally {
+          s.loading = false;
+        }
+      };
+
+      const renderAlbums = () => {
+        clearRenderedContent(body);
+        if (albumsState.items.length) {
+          renderReact(
+            body,
+            getRuntime().React.createElement(getRuntime().AlbumList, {
+              containerRef: { current: body },
+              content: albumsState.items.map(toNativeAlbum),
+              config: { singer: true, subtitle: true, name: true, noplay: true },
+            })
+          );
+        } else {
+          body.innerHTML = '<div class="qmtui-empty">暂无专辑</div>';
+        }
+      };
+
+      const loadAlbums = async (reset) => {
+        if (albumsState.loading || (!reset && !albumsState.hasMore)) return;
+        albumsState.loading = true;
+        const begin = reset ? 0 : albumsState.items.length;
+        try {
+          const result = await api(
+            `/api/singer/albums?${query({ mid: resolvedMid, begin, pageSize: 30 })}`
+          );
+          if (token !== state.routeToken) return;
+          const albums = result.albums || [];
+          albumsState.items = reset ? albums : albumsState.items.concat(albums);
+          albumsState.hasMore = !!result.hasMore;
+          albumsState.loaded = true;
+          if (activeTab === 'albums') renderAlbums();
+        } catch (error) {
+          if (token !== state.routeToken) return;
+          if (albumsState.items.length === 0) {
+            body.innerHTML = `<div class="qmtui-empty">${escapeHtml(error.message)}</div>`;
+          } else {
+            showToast(error.message, true);
+          }
+        } finally {
+          albumsState.loading = false;
+        }
+      };
+
+      const tabs = [...host.querySelectorAll('[data-singer-tab]')];
+      for (const node of tabs) {
+        node.onclick = () => {
+          const target = node.dataset.singerTab;
+          if (activeTab === target) return;
+          activeTab = target;
+          for (const n of tabs) n.classList.toggle('c_tx_current', n === node);
+          body.scrollTop = 0;
+          renderToolbar();
+          if (target === 'songs') {
+            if (songsState.loaded) renderSongs();
+            else loadSongs(true);
+          } else if (albumsState.loaded) {
+            renderAlbums();
+          } else {
+            loadAlbums(true);
+          }
+        };
+      }
+
+      body.addEventListener('scroll', () => {
+        if (body.scrollHeight - body.scrollTop - body.clientHeight >= 400) return;
+        if (activeTab === 'songs') loadSongs(false);
+        else loadAlbums(false);
+      });
+
+      bindHeader();
+      renderToolbar();
+      loadSongs(true);
     } catch (error) {
       host.innerHTML = `<div class="qmtui-empty">${escapeHtml(error.message)}</div>`;
     }
@@ -1010,28 +1430,46 @@ import { state } from './bridge/state.js';
       body.innerHTML = '<div class="qmtui-empty">当前内容没有可用的评论 ID</div>';
       return;
     }
+    const pageState = { items: [], page: 1, hasMore: true, loading: false, total: 0, cursor: '' };
     body.innerHTML = '<div class="qmtui-loading">正在加载评论…</div>';
-    try {
-      const result = await api(`/api/comments?${query({ bizId, bizType, sort: 'hot' })}`);
-      body.innerHTML = `<div class="qmtui-comment-editor">
-          <textarea class="qmtui-native-input c_btn" id="qmtui-comment-text" placeholder="写评论"></textarea>
-          <a class="mod_btn c_btn_skin" id="qmtui-comment-send"><span class="btn__cover"></span><span class="btn__txt">发布</span></a>
-        </div>
-        <h3 class="qmtui-comment-title c_tx_normal">评论 ${Number(result.total) || 0}</h3>
-        <div class="mod_comment qmtui-comment-list"><ul class="comment__list">
-          ${
-            (result.comments || [])
-              .map(
-                (comment) => `<li class="comment__list_item c_b_normal">
+
+    const commentItem = (comment) => `<li class="comment__list_item c_b_normal">
                 <div class="comment__avatar"><img src="${escapeHtml(comment.avatar || '')}" alt=""></div>
                 <h4 class="comment__title c_tx_current">${escapeHtml(comment.nick || 'QQ音乐用户')}</h4>
                 <p class="comment__text c_tx_normal">${escapeHtml(comment.content)}</p>
                 <div class="comment__opt c_tx_thin">赞 ${Number(comment.praiseCount) || 0}${comment.isSelf ? ` <a class="qmtui-comment-delete c_tx_current" data-comment-id="${escapeHtml(comment.id)}">删除</a>` : ''}</div>
-              </li>`
-              )
-              .join('') || '<li class="qmtui-empty">暂无评论</li>'
+              </li>`;
+
+    const bindDelete = () => {
+      for (const button of body.querySelectorAll('[data-comment-id]')) {
+        button.onclick = async () => {
+          if (!confirm('确定删除这条评论？')) return;
+          try {
+            await post('/api/comments/delete', { commentId: button.dataset.commentId });
+            showToast('评论已删除');
+            renderComments(body, bizId, bizType);
+          } catch (error) {
+            showToast(error.message, true);
           }
-        </ul></div>`;
+        };
+      }
+    };
+
+    const renderList = () => {
+      const list = body.querySelector('.comment__list');
+      if (!list) return;
+      list.innerHTML =
+        pageState.items.map(commentItem).join('') || '<li class="qmtui-empty">暂无评论</li>';
+      bindDelete();
+    };
+
+    const renderShell = () => {
+      body.innerHTML = `<div class="qmtui-comment-editor">
+          <textarea class="qmtui-native-input c_btn" id="qmtui-comment-text" placeholder="写评论"></textarea>
+          <a class="mod_btn c_btn_skin" id="qmtui-comment-send"><span class="btn__cover"></span><span class="btn__txt">发布</span></a>
+        </div>
+        <h3 class="qmtui-comment-title c_tx_normal">评论 ${pageState.total}</h3>
+        <div class="mod_comment qmtui-comment-list"><ul class="comment__list"></ul></div>`;
       body.querySelector('#qmtui-comment-send').onclick = async () => {
         const editor = body.querySelector('#qmtui-comment-text');
         if (!editor.value.trim()) return;
@@ -1048,21 +1486,50 @@ import { state } from './bridge/state.js';
           showToast(error.message, true);
         }
       };
-      for (const button of body.querySelectorAll('[data-comment-id]')) {
-        button.onclick = async () => {
-          if (!confirm('确定删除这条评论？')) return;
-          try {
-            await post('/api/comments/delete', { commentId: button.dataset.commentId });
-            showToast('评论已删除');
-            renderComments(body, bizId, bizType);
-          } catch (error) {
-            showToast(error.message, true);
-          }
-        };
+      renderList();
+    };
+
+    const load = async (reset) => {
+      if (pageState.loading || (!reset && !pageState.hasMore)) return;
+      pageState.loading = true;
+      const targetPage = reset ? 1 : pageState.page + 1;
+      try {
+        const result = await api(
+          `/api/comments?${query({ bizId, bizType, sort: 'hot', page: targetPage, cursor: pageState.cursor })}`
+        );
+        const raw = result.comments || [];
+        pageState.items = reset ? raw : pageState.items.concat(raw);
+        pageState.page = targetPage;
+        if (result.total) pageState.total = Number(result.total);
+        pageState.hasMore = !!result.hasMore && pageState.items.length < pageState.total;
+        if (result.cursor) pageState.cursor = result.cursor;
+        if (reset) renderShell();
+        else renderList();
+      } catch (error) {
+        if (reset || pageState.items.length === 0) {
+          body.innerHTML = `<div class="qmtui-empty">${escapeHtml(error.message)}</div>`;
+        } else {
+          showToast(error.message, true);
+        }
+      } finally {
+        pageState.loading = false;
       }
-    } catch (error) {
-      body.innerHTML = `<div class="qmtui-empty">${escapeHtml(error.message)}</div>`;
-    }
+    };
+
+    const onScroll = () => {
+      if (
+        pageState.hasMore &&
+        !pageState.loading &&
+        body.scrollHeight - body.scrollTop - body.clientHeight < 400
+      ) {
+        load(false);
+      }
+    };
+    if (body.__qmtuiCommentScroll) body.removeEventListener('scroll', body.__qmtuiCommentScroll);
+    body.__qmtuiCommentScroll = onScroll;
+    body.addEventListener('scroll', onScroll);
+
+    load(true);
   }
 
   async function renderSearchRoute(path, search) {
@@ -1071,12 +1538,13 @@ import { state } from './bridge/state.js';
     if (!host) return;
     const text = new URLSearchParams(search).get('query') || '';
     if (!text) {
-      host.innerHTML = '<div class="qmtui-empty">在顶部搜索框输入歌曲、歌单或专辑</div>';
+      host.innerHTML = '<div class="qmtui-empty">在顶部搜索框输入歌曲、歌手、歌单或专辑</div>';
       return;
     }
 
     const TABS = [
       { id: 'song', label: '歌曲' },
+      { id: 'singer', label: '歌手' },
       { id: 'playlist', label: '歌单' },
       { id: 'album', label: '专辑' },
     ];
@@ -1102,9 +1570,11 @@ import { state } from './bridge/state.js';
     const endpointOf = (id) =>
       id === 'song'
         ? '/api/library/search'
-        : id === 'playlist'
-          ? '/api/library/search/playlists'
-          : '/api/library/search/albums';
+        : id === 'singer'
+          ? '/api/library/search/singers'
+          : id === 'playlist'
+            ? '/api/library/search/playlists'
+            : '/api/library/search/albums';
 
     const playPlaylist = async (playlist) => {
       const detail = await api(
@@ -1120,6 +1590,7 @@ import { state } from './bridge/state.js';
 
     function renderItems(id, resetScroll = false) {
       const s = tabState[id];
+      clearRenderedContent(body);
       if (!s.loaded) {
         body.innerHTML = '<div class="qmtui-loading">正在加载…</div>';
         return;
@@ -1130,6 +1601,8 @@ import { state } from './bridge/state.js';
       }
       if (id === 'song') {
         renderSongList(body, s.items);
+      } else if (id === 'singer') {
+        renderSingerCards(body, s.items);
       } else if (id === 'playlist') {
         renderReact(
           body,
@@ -1166,9 +1639,11 @@ import { state } from './bridge/state.js';
         const raw =
           id === 'song'
             ? result.songs || []
-            : id === 'playlist'
-              ? result.playlists || []
-              : result.albums || [];
+            : id === 'singer'
+              ? result.singers || []
+              : id === 'playlist'
+                ? result.playlists || []
+                : result.albums || [];
         s.items = reset ? raw : s.items.concat(raw);
         s.page = targetPage;
         s.hasMore = !!result.hasMore;
@@ -1227,11 +1702,39 @@ import { state } from './bridge/state.js';
     else body.innerHTML = `<div class="qmtui-empty">${escapeHtml(emptyText)}</div>`;
   }
 
+  async function renderProfilePage() {
+    const token = ++state.routeToken;
+    const page = renderPageShell('个人主页', '', []);
+    if (!page) return;
+    page.body.innerHTML = '<div class="qmtui-loading">正在加载个人资料…</div>';
+    try {
+      const account = await api('/api/account');
+      if (token !== state.routeToken) return;
+      if (!account.loggedIn) {
+        page.body.innerHTML = '<div class="qmtui-empty">请先登录 QQ 音乐</div>';
+        return;
+      }
+      const avatar = account.avatarUrl || '';
+      page.body.innerHTML = `<div class="qmtui-profile">
+        <div class="qmtui-profile__avatar">${avatar ? `<img src="${escapeHtml(avatar)}" alt="">` : ''}</div>
+        <div class="qmtui-profile__name">${escapeHtml(account.nick || account.uin || 'QQ音乐用户')}</div>
+        <div class="qmtui-profile__uin">QQ号：${escapeHtml(account.uin || '')}</div>
+        <div class="qmtui-profile__stats">
+          <span>音乐等级 <b>${Number(account.musicLevel) || 0}</b></span>
+          <span>${account.isVip ? 'VIP会员' : '普通用户'}${account.vipLevel ? ` · ${Number(account.vipLevel)}级` : ''}</span>
+        </div>
+      </div>`;
+    } catch (error) {
+      if (token === state.routeToken) page.body.innerHTML = `<div class="qmtui-empty">${escapeHtml(error.message)}</div>`;
+    }
+  }
+
   async function renderRecommendPage() {
     const token = ++state.routeToken;
     const page = renderPageShell('推荐', '根据你的音乐偏好生成', ['每日30首', '猜你喜欢']);
     if (!page) return;
     const load = async (type) => {
+      clearRenderedContent(page.body);
       page.body.innerHTML = '<div class="qmtui-loading">正在加载推荐歌曲…</div>';
       try {
         const result = await api(`/api/library/recommend/${type}`);
@@ -1279,6 +1782,7 @@ import { state } from './bridge/state.js';
 
     const renderSongs = (resetScroll = false) => {
       const s = songsState;
+      clearRenderedContent(page.body);
       if (!s.loaded) {
         page.body.innerHTML = '<div class="qmtui-loading">正在加载…</div>';
         return;
@@ -1442,8 +1946,10 @@ import { state } from './bridge/state.js';
     renderLikePage,
     renderMusicHallPage,
     renderPlaylistRoute,
+    renderProfilePage,
     renderRecommendPage,
     renderSearchRoute,
+    renderSingerRoute,
     renderSongCommentRoute,
     resolveSong: () => (state.remote?.song ? toQqSong(state.remote.song) : null),
   });
@@ -1503,9 +2009,46 @@ import { state } from './bridge/state.js';
           toggleFavorite();
           return;
         }
+        // 在全屏播放器里点「评论/歌手/专辑」应先收起播放器，否则新页面会被封面浮层盖住。
+        // 原生组件自身本来就会 JG('IsCoverPlayerVisible', false)，但下面的分支为了接管跳转
+        // 调了 stopImmediatePropagation，把原生 onClick 掐掉了，故这里显式补上。
+        const fromCoverPlayer = Boolean(event.target.closest('.cover_layout'));
+        const closeCoverPlayer = () => {
+          if (!fromCoverPlayer) return;
+          try {
+            runtime.store?.JG('IsCoverPlayerVisible', false);
+          } catch {
+            // 状态未初始化时忽略
+          }
+        };
+        // 播放栏与全屏封面的歌手名可点击进入歌手页（原生按歌手逐个渲染 span，
+        // 分隔符 '/' 会挂在相邻 span 尾部，故剥离后再跳转）。
+        const singerNode = event.target.closest('.player_cont_state_inline_desc, .cover_singer_link');
+        if (singerNode) {
+          const singer = (singerNode.textContent || '').replace(/[\s/、,，·]+$/, '').trim();
+          if (singer) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            closeCoverPlayer();
+            runtime.history.push(`/singer_detail?name=${encodeURIComponent(singer)}`);
+            return;
+          }
+        }
+        // 详情页头部里由 singerLinks() 生成的歌手名。
+        const singerLinkNode = event.target.closest('[data-singer-name]');
+        if (singerLinkNode) {
+          const singer = singerLinkNode.dataset.singerName;
+          if (singer) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            runtime.history.push(`/singer_detail?name=${encodeURIComponent(singer)}`);
+            return;
+          }
+        }
         if (event.target.closest('.player_cont_state_tool_comment')) {
           event.preventDefault();
           event.stopImmediatePropagation();
+          closeCoverPlayer();
           if (state.remote?.song?.id) {
             openSongComments(toQqSong(state.remote.song, Boolean(state.remote.isFavorite)));
           } else {
@@ -1567,6 +2110,242 @@ import { state } from './bridge/state.js';
     );
   }
 
+  // ── 设置 ────────────────────────────────────────────────
+  // 头像下拉里的「设置」入口。原生浮层由 React 按需渲染（每次开关都重建），故用
+  // MutationObserver 注入，节点结构照抄原生项（.user_info_popover__content__item）。
+  function setupSettingsEntry() {
+    const inject = () => {
+      const ul = document.querySelector('.user_info_popover__content');
+      if (!ul || ul.querySelector('[data-qmtui-settings]')) return;
+      const item = document.createElement('a');
+      item.className = 'user_info_popover__content__item';
+      item.setAttribute('data-qmtui-settings', '1');
+      item.innerHTML =
+        '<span class="icon setting__icon_tool"></span><a class="act_button">设置</a><div class="common_hover__bg c_bg_normal"></div>';
+      item.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        // 先关掉原生浮层（点遮罩即收起），再开我们的设置弹窗。
+        document.querySelector('.shadow_window')?.click();
+        showSettingsDialog();
+      };
+      ul.append(item);
+    };
+    inject();
+    new MutationObserver(inject).observe(document.body, { childList: true, subtree: true });
+  }
+
+  // 设置面板：全部项都对应真实后端能力——音质写 preferredQualityTier、模式写 PlaybackMode、
+  // 音量与声音输出走 /api/action。值来自 SSE 推送的 state.remote，不额外拉接口。
+  function showSettingsDialog() {
+    const runtime = getRuntime();
+    if (!runtime) return;
+    const { React, dialog } = runtime;
+
+    // 档位名称与 AudioQualityHelper.GetQualityName 对齐；取值范围跟随当前曲目可用档位，
+    // 否则用户已选的档位（如 4=臻品母带）不在列表里会显示成"没有选中"。
+    const QUALITY_LABELS = {
+      0: 'Hi-Res',
+      1: 'SQ 无损',
+      2: 'HQ 高品质',
+      3: '标准音质',
+      4: '臻品母带',
+      5: '臻品音质',
+      6: '臻品全景声 5.1',
+      7: '臻品全景声 7.1',
+      8: '杜比全景声',
+    };
+    const availableTiers = Array.isArray(state.remote?.availableQualityTiers)
+      ? state.remote.availableQualityTiers.map(Number)
+      : [];
+    const QUALITY_CHOICES = (availableTiers.length ? availableTiers : [1, 2, 3]).map((tier) => ({
+      tier,
+      label: QUALITY_LABELS[tier] || `档位 ${tier}`,
+    }));
+    const MODE_STRING_TO_INT = { list_loop: 0, single_loop: 1, shuffle: 2, sequential: 3 };
+    const MODE_CHOICES = [
+      { value: 0, label: '列表循环' },
+      { value: 1, label: '单曲循环' },
+      { value: 2, label: '随机播放' },
+      { value: 3, label: '顺序播放' },
+    ];
+
+    function SettingsContent() {
+      const remote = state.remote || {};
+      const [quality, setQuality] = React.useState(Number(remote.preferredQualityTier) || 1);
+      const [mode, setMode] = React.useState(MODE_STRING_TO_INT[remote.mode] ?? 0);
+      const [volume, setVolume] = React.useState(Number(remote.volume) || 80);
+      const [audioEnabled, setAudioEnabled] = React.useState(remote.audioEnabled !== false);
+      const [error, setError] = React.useState('');
+
+      const run = (promise) => promise.catch((e) => setError(e.message));
+
+      const pickQuality = (tier) => {
+        setQuality(tier);
+        run(post('/api/quality', { tier }));
+      };
+      const pickMode = (value) => {
+        setMode(value);
+        run(post('/api/action', { action: 'set_mode', mode: value }));
+      };
+      const changeVolume = (value) => {
+        setVolume(value);
+        run(post('/api/action', { action: 'volume', volume: value }));
+      };
+      const pickOutput = (enabled) => {
+        setAudioEnabled(enabled);
+        run(post('/api/action', { action: 'set_audio', enabled }));
+      };
+
+      const row = (label, hint, ...controls) =>
+        React.createElement(
+          'div',
+          { className: 'qmtui-setting' },
+          React.createElement(
+            'div',
+            { className: 'qmtui-setting__label' },
+            React.createElement('span', null, label),
+            hint ? React.createElement('span', { className: 'qmtui-setting__hint c_tx_thin' }, hint) : null
+          ),
+          React.createElement('div', { className: 'qmtui-setting__control' }, ...controls)
+        );
+
+      const chips = (choices, current, onPick) =>
+        choices.map((choice) =>
+          React.createElement(
+            'a',
+            {
+              key: String(choice.tier ?? choice.value),
+              className: `qmtui-setting__chip${(choice.tier ?? choice.value) === current ? ' active' : ''}`,
+              onClick: () => onPick(choice.tier ?? choice.value),
+            },
+            choice.label
+          )
+        );
+
+      return React.createElement(
+        'div',
+        { className: 'qmtui-settings' },
+        row('默认音质', '新播放歌曲优先使用的档位', chips(QUALITY_CHOICES, quality, pickQuality)),
+        row('播放模式', '', chips(MODE_CHOICES, mode, pickMode)),
+        row(
+          '音量',
+          '',
+          React.createElement('input', {
+            className: 'qmtui-setting__range',
+            type: 'range',
+            min: 0,
+            max: 100,
+            value: volume,
+            onChange: (event) => changeVolume(Number(event.target.value)),
+          }),
+          React.createElement('span', { className: 'qmtui-setting__value' }, `${volume}`)
+        ),
+        row(
+          '声音输出',
+          '「本机出声」由运行 qmtui 的机器播放；「仅遥控」只同步状态，声音在你正在听的设备上',
+          chips(
+            [
+              { value: 1, label: '本机出声' },
+              { value: 0, label: '仅遥控' },
+            ],
+            audioEnabled ? 1 : 0,
+            (value) => pickOutput(value === 1)
+          )
+        ),
+        error ? React.createElement('div', { className: 'qmtui-setting__error' }, error) : null
+      );
+    }
+
+    dialog.show({
+      mode: 'custom',
+      title: '设置',
+      width: 460,
+      component: React.createElement(SettingsContent),
+    });
+  }
+
+  function setupCoverLyricToggle() {
+    const MOBILE_MAX = 768;
+
+    const reset = () => {
+      document
+        .querySelectorAll('.cover_layout.qmtui-show-lyric')
+        .forEach((el) => el.classList.remove('qmtui-show-lyric'));
+    };
+
+    document.addEventListener('click', (event) => {
+      if (window.innerWidth > MOBILE_MAX) return;
+      const target =
+        event.target instanceof Element ? event.target : event.target.parentElement;
+      if (!target) return;
+      const layout = target.closest('.cover_layout.cover_layout--show');
+      if (!layout) return;
+      if (target.closest('.cover_album__wrapper')) {
+        // 歌手/专辑链接自身跳转，不触发切换
+        if (target.closest('.cover_singer_link, .cover_song_album')) return;
+        layout.classList.add('qmtui-show-lyric');
+      } else if (target.closest('.layout_page')) {
+        // 点击歌词句跳转播放，不触发切换
+        if (target.closest('.lyric-list .item')) return;
+        layout.classList.remove('qmtui-show-lyric');
+      }
+    });
+
+    // 播放器关闭时重置，下次打开默认显示封面
+    const observer = new MutationObserver(() => {
+      if (!document.body.classList.contains('in-cover-player')) reset();
+    });
+    observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  }
+
+  function setupMobileSidebar() {
+    const MOBILE_MAX = 768;
+
+    const ensureButton = () => {
+      if (window.innerWidth > MOBILE_MAX) return;
+      const topCont = document.querySelector('.top_cont');
+      if (!topCont || topCont.querySelector('.qmtui-sidebar-toggle')) return;
+      const btn = document.createElement('a');
+      btn.className = 'qmtui-sidebar-toggle';
+      btn.title = '侧边栏';
+      btn.innerHTML =
+        '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+        '<path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+      btn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        document.querySelector('.main_cont')?.classList.toggle('qmtui-sidebar-open');
+      });
+      topCont.insertBefore(btn, topCont.firstChild);
+    };
+
+    document.addEventListener('click', (event) => {
+      if (window.innerWidth > MOBILE_MAX) return;
+      const mainCont = document.querySelector('.main_cont');
+      if (!mainCont || !mainCont.classList.contains('qmtui-sidebar-open')) return;
+      if (event.target.closest('.qmtui-sidebar-toggle')) return;
+      if (!event.target.closest('.main')) {
+        mainCont.classList.remove('qmtui-sidebar-open');
+        return;
+      }
+      if (event.target.closest('a, .nav_item')) {
+        mainCont.classList.remove('qmtui-sidebar-open');
+      }
+    });
+
+    const removeButton = () => {
+      document.querySelector('.qmtui-sidebar-toggle')?.remove();
+    };
+
+    window.addEventListener('resize', () => {
+      if (window.innerWidth <= MOBILE_MAX) ensureButton();
+      else removeButton();
+    });
+
+    ensureButton();
+  }
+
   function boot() {
     const runtime = getRuntime();
     if (!runtime) {
@@ -1574,6 +2353,9 @@ import { state } from './bridge/state.js';
       return;
     }
     bindOriginalUi();
+    setupCoverLyricToggle();
+    setupMobileSidebar();
+    setupSettingsEntry();
     startProgressTicker();
     api('/api/account')
       .then(renderAccount)

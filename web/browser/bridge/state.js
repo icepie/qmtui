@@ -10,6 +10,7 @@
  *   currentSongKey: string;
  *   currentDuration: number;
  *   currentLyricSignature: string;
+ *   currentQueueKey: string;
  * lastPlaybackState: unknown;
  * lastPosition: unknown;
  * lastVolume: unknown;
@@ -41,6 +42,7 @@ export const state = {
   currentSongKey: '',
   currentDuration: 0,
   currentLyricSignature: '',
+  currentQueueKey: '',
   lastPlaybackState: null,
   lastPosition: null,
   lastVolume: null,

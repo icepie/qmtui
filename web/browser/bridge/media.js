@@ -98,5 +98,14 @@ export function mapSong(item) {
     mediaMid: source.mediaMid || source.media_mid || source.file?.media_mid || '',
     id: Number(source.id) || 0,
     albumMid: source.albumMid || album?.mid || '',
+    // 原生 SongList 依据 singer[].mid 决定歌手名是否渲染为可点链接（无 mid 会加 c_tx_disabled 变灰），
+    // 故必须把后端 singers 的 mid/id 透传，不能只靠 artist 字符串。
+    singers: (source.singers || source.singer || [])
+      .map((value) => ({
+        name: value.name || value.title || '',
+        mid: value.mid || '',
+        id: Number(value.id) || 0,
+      }))
+      .filter((value) => value.name),
   };
 }

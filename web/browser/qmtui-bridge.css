@@ -61,6 +61,35 @@
   flex: 0 0 auto !important;
   overflow: visible !important;
 }
+/* 时长列：原生 `.songlist__header_time, .songlist__time { width: 42px; padding-left: 10px }`
+   配 border-box 后内容盒仅 32px，而 mm:ss（tabular-nums）约 36px，末位数字被裁切。
+   表头与数据行同宽，一起加宽以保持列对齐。 */
+.qmtui-native-route .songlist__time,
+.qmtui-native-route .songlist__header_time,
+.qmtui-page__body .songlist__time,
+.qmtui-page__body .songlist__header_time {
+  width: 48px !important;
+  flex-shrink: 0 !important;
+  white-space: nowrap !important;
+}
+/* 路由滚动容器沿用 app 皮肤的做法隐藏滚动条：既避免滚动条压住时长列，也与 .main_cont 观感一致。 */
+.qmtui-page__body,
+.qmtui-search-results {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.qmtui-page__body::-webkit-scrollbar,
+.qmtui-search-results::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+/* 歌手列：原生只在有 mid 时渲染为可点链接，否则加 c_tx_disabled 变灰。mid 已透传，
+   这里兜住 artist 兜底路径（无 mid 时）的观感，避免整列看起来像禁用态。 */
+.songlist__author a.c_tx_disabled.qmtui-singer-link {
+  color: inherit !important;
+  opacity: 0.85;
+}
 a.nav_item[href*="/local"],
 a.nav_item[href*="/webdav"],
 a.nav_item[href*="/webDav"] {
@@ -353,6 +382,12 @@ a.nav_item[href*="/webDav"] {
   display: block;
   transition: transform 0.2s ease;
 }
+.qmtui-card__cover--round {
+  border-radius: 50%;
+}
+.qmtui-card__cover--round img {
+  border-radius: 50%;
+}
 .qmtui-card:hover img {
   transform: scale(1.04);
 }
@@ -383,4 +418,384 @@ a.nav_item[href*="/webDav"] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.qmtui-singer-link {
+  cursor: pointer;
+}
+.qmtui-singer-link:hover {
+  color: #1ed99a;
+}
+/* 歌曲行内的 ⋯ 入口：与播放栏同款图标（同一份 assets/img/menu_*.svg），点开原生菜单。 */
+.qmtui-row-menu {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  margin-left: 10px;
+  vertical-align: -3px;
+  cursor: pointer;
+  background-color: currentColor;
+  -webkit-mask: url('./assets/img/menu_c6889ace.svg') no-repeat center / contain;
+  mask: url('./assets/img/menu_c6889ace.svg') no-repeat center / contain;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+.songlist__item:hover .qmtui-row-menu {
+  opacity: 0.75;
+}
+.qmtui-row-menu:hover {
+  opacity: 1;
+  color: #1ed99a;
+}
+@media (max-width: 768px) {
+  /* 触屏没有 hover，常显 */
+  .qmtui-row-menu {
+    opacity: 0.75;
+  }
+}
+/* 播放栏 / 全屏封面的歌手名：原生渲染为 span，这里补可点击反馈 */
+.player_cont_state_inline_desc,
+.cover_singer_link {
+  cursor: pointer;
+}
+.player_cont_state_inline_desc:hover,
+.cover_singer_link:hover {
+  color: #1ed99a;
+}
+.detail__para .qmtui-singer-link {
+  color: inherit;
+}
+/* 歌手页：热门/最新 排序与总数。原生 .mod_normal_nav > .layout_cont 带 margin: 0 40px（tab 左内缩 40px），
+   这里用同样的左右内缩，保证排序行与上方 tab 左对齐；内容右对齐，避免与 tab 争视觉层级。 */
+.qmtui-singer-toolbar {
+  display: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 18px;
+  margin: 0 40px;
+  padding: 0 0 6px;
+}
+.qmtui-singer-toolbar--active {
+  display: flex;
+}
+.qmtui-singer-order__item {
+  padding: 4px 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+.qmtui-singer-order__item.active {
+  color: #1ed99a;
+  border-color: #1ed99a;
+}
+.qmtui-singer-order__count {
+  margin-left: auto;
+}
+.qmtui-profile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 36px 0 24px;
+  text-align: center;
+}
+.qmtui-profile__avatar {
+  width: 108px;
+  height: 108px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+}
+.qmtui-profile__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.qmtui-profile__name {
+  font-size: 22px;
+  font-weight: 600;
+}
+.qmtui-profile__uin {
+  color: var(--text_color_secondary, rgba(255, 255, 255, 0.55));
+}
+.qmtui-profile__stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 18px;
+  margin-top: 6px;
+  color: var(--text_color_secondary, rgba(255, 255, 255, 0.55));
+}
+.qmtui-profile__stats b {
+  color: #1ed99a;
+}
+/* 设置面板。原生 .mod_popup 内边距为 0，自定义内容自带内边距（同 .qmtui-create-playlist）。 */
+.qmtui-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 4px 24px 22px;
+}
+.qmtui-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.qmtui-setting__label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.qmtui-setting__hint {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.qmtui-setting__control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.qmtui-setting__chip {
+  padding: 5px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+.qmtui-setting__chip:hover {
+  color: #1ed99a;
+  border-color: #1ed99a;
+}
+.qmtui-setting__chip.active {
+  color: #12221e;
+  background: #1ed99a;
+  border-color: #1ed99a;
+}
+.qmtui-setting__range {
+  flex: 1 1 auto;
+  min-width: 0;
+  accent-color: #1ed99a;
+}
+.qmtui-setting__value {
+  flex: 0 0 auto;
+  width: 32px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.qmtui-setting__error {
+  color: #e75b52;
+}
+/* 汉堡菜单按钮默认隐藏，仅移动端注入且显示 */
+.qmtui-sidebar-toggle {
+  display: none;
+}
+
+/* 移动端响应式适配 */
+@media (max-width: 768px) {
+  .qmtui-comment-editor,
+  .qmtui-comment-title,
+  .qmtui-comment-list {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+  .qmtui-comment-list .comment__list_item {
+    padding-left: 52px;
+  }
+  .qmtui-login-methods {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .qmtui-page__head {
+    padding: 20px 0 14px;
+  }
+  .qmtui-page__tabs {
+    gap: 20px;
+  }
+  .qmtui-card-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 16px;
+  }
+  .qmtui-detail-actions {
+    flex-wrap: wrap;
+  }
+  /* 移动端侧边栏改为抽屉，汉堡按钮切换 */
+  .main_cont .main {
+    display: block !important;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 280px;
+    max-width: 85vw;
+    z-index: 10000;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    overflow-y: auto;
+  }
+  .main_cont.qmtui-sidebar-open .main {
+    transform: translateX(0);
+  }
+  .main_cont.qmtui-sidebar-open::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 9999;
+  }
+  .qmtui-sidebar-toggle {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    margin-right: 4px;
+    flex: 0 0 auto;
+    cursor: pointer;
+    color: #8a8a8a;
+  }
+  .qmtui-sidebar-toggle:hover {
+    color: #1ecc94;
+  }
+  .top_cont_left {
+    display: none !important;
+  }
+  .top_oper_img {
+    display: none !important;
+  }
+  /* 全屏播放器收起图标在移动端显示 */
+  .cover_layout .cover_player_page_top_cont.left .top_oper_img--fallback {
+    display: inline-block !important;
+  }
+  .top_oper_search {
+    flex: 1 !important;
+    min-width: 0 !important;
+  }
+  .top_cont_right {
+    padding: 0 12px !important;
+  }
+  /* 路由网格列收缩，避免播放栏 min-content 撑开溢出 */
+  .route_cont.qmtui-route-active {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .qmtui-page {
+    padding: 0 16px 28px !important;
+  }
+  .songlist__album,
+  .songlist__header_album {
+    display: none !important;
+  }
+  /* 全屏播放器：封面与歌词单屏切换（点封面看歌词，点歌词空白回封面） */
+  .cover_layout.cover_layout--show .cover_player_page_main_cont {
+    position: relative !important;
+    flex-direction: column !important;
+    justify-content: center !important;
+    gap: 0 !important;
+  }
+  .cover_layout.cover_layout--show .cover_album__wrapper {
+    flex: 1 1 auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    transition: opacity 0.3s ease, visibility 0.3s ease !important;
+  }
+  .cover_layout.cover_layout--show .cover_album {
+    width: min(72vw, 42vh) !important;
+    height: min(72vw, 42vh) !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+  }
+  .cover_layout.cover_layout--show .layout_page {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    transition: opacity 0.3s ease, visibility 0.3s ease !important;
+  }
+  .cover_layout.cover_layout--show.qmtui-show-lyric .cover_album__wrapper {
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+  }
+  .cover_layout.cover_layout--show.qmtui-show-lyric .layout_page {
+    opacity: 1 !important;
+    visibility: visible !important;
+    pointer-events: auto !important;
+  }
+  /* 全屏播放器底部控件：移动端重排，避免按钮挤压重叠 */
+  .cover_layout.cover_layout--show .cover_player {
+    padding-left: 14px !important;
+    padding-right: 14px !important;
+  }
+  .cover_layout.cover_layout--show .player_cont_left {
+    flex: 0 0 auto !important;
+    width: auto !important;
+  }
+  .cover_layout.cover_layout--show .player_cont_left .player_cont_state {
+    flex: 0 0 auto !important;
+    width: auto !important;
+    margin-left: 8px !important;
+  }
+  .cover_layout.cover_layout--show .player_btn_list {
+    flex: 1 1 auto !important;
+    width: auto !important;
+    justify-content: center !important;
+  }
+  .cover_layout.cover_layout--show .player_cont_right {
+    flex: 0 0 auto !important;
+    width: auto !important;
+    padding-right: 0 !important;
+    gap: 12px !important;
+  }
+  /* 按钮不被 flex 压缩 */
+  .cover_layout.cover_layout--show .player_btn_list > * {
+    flex-shrink: 0 !important;
+  }
+  .cover_layout.cover_layout--show .player_btn_list_prefore,
+  .cover_layout.cover_layout--show .player_btn_list_pause,
+  .cover_layout.cover_layout--show .player_btn_list_play,
+  .cover_layout.cover_layout--show .player_btn_list_next,
+  .cover_layout.cover_layout--show .player_btn_list_voice {
+    margin-left: 10px !important;
+  }
+  /* 主页底部播放器栏：移动端重排，避免按钮挤压 */
+  .route_cont .player_cont_left {
+    flex: 1 1 auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+  }
+  .route_cont .player_cont_album_img {
+    margin-left: 8px !important;
+  }
+  .route_cont .player_btn_list {
+    flex: 0 0 auto !important;
+    width: auto !important;
+  }
+  .route_cont .player_btn_list > * {
+    flex-shrink: 0 !important;
+  }
+  .route_cont .player_btn_list_prefore,
+  .route_cont .player_btn_list_pause,
+  .route_cont .player_btn_list_play,
+  .route_cont .player_btn_list_next {
+    margin-left: 10px !important;
+  }
+  .route_cont .player_btn_list .svg_icon_btn.voice {
+    margin-left: 10px !important;
+  }
+  .route_cont .player_cont_right {
+    flex: 0 0 auto !important;
+    width: auto !important;
+    padding-right: 8px !important;
+    gap: 8px !important;
+  }
 }

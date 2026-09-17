@@ -69,7 +69,40 @@ const noop = () => {};
 const ipc = new BrowserEventEmitter();
 ipc.send = noop;
 ipc.sendSync = noop;
-ipc.invoke = async () => undefined;
+ipc.invoke = async (channel, payload) => {
+  if (channel === 'download-song-file') {
+    const song = payload?.song || {};
+    const album =
+      typeof song.album === 'string'
+        ? song.album
+        : song.album?.name || song.album?.title || '';
+    const body = {
+      song: {
+        mid: song.mid || song.media_mid || '',
+        title: song.title || song.name || '',
+        artist: song.artist || (song.singer || []).map((s) => s?.name || '').join('/'),
+        album,
+        duration: Number(song.interval || song.duration) || 0,
+        mediaMid: song.media_mid || song.file?.media_mid || song.mid || '',
+        id: Number(song.id) || 0,
+        albumMid: song.albumMid || song.album?.mid || '',
+      },
+      quality: payload?.quality || '128k',
+    };
+    try {
+      const res = await fetch('/api/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      return { success: Boolean(data.success), filename: data.filename || '', msg: data.message || '' };
+    } catch (err) {
+      return { success: false, filename: '', msg: '下载出错: ' + (err && err.message ? err.message : String(err)) };
+    }
+  }
+  return undefined;
+};
 
 const win = {
   on: noop,
