@@ -25,7 +25,7 @@ public class WebPlaybackServerTests
         Assert.True(server.Start(port, initialAudioOutput: false, remoteControlOnly: true));
 
         using var client = new TcpClient();
-        await client.ConnectAsync(IPAddress.Loopback, port);
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
         await using var stream = client.GetStream();
         await stream.WriteAsync(Encoding.ASCII.GetBytes("GET /api/events HTTP/1.1\r\nHost: localhost\r\n\r\n"));
         await stream.FlushAsync();
@@ -55,7 +55,7 @@ public class WebPlaybackServerTests
         Assert.True(server.Start(port));
 
         using var client = new TcpClient();
-        await client.ConnectAsync(IPAddress.Loopback, port);
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
         await using var stream = client.GetStream();
         await stream.WriteAsync(Encoding.ASCII.GetBytes("GET /api/library/search HTTP/1.1\r\nHost: localhost\r\n\r\n"));
         await stream.FlushAsync();
@@ -79,7 +79,7 @@ public class WebPlaybackServerTests
 
         const string body = "{\"song\":{\"mid\":\"mid-1\",\"title\":\"Song\",\"artist\":\"Artist\",\"album\":\"Album\",\"duration\":180},\"context\":[]}";
         using var client = new TcpClient();
-        await client.ConnectAsync(IPAddress.Loopback, port);
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
         await using var stream = client.GetStream();
         var request = $"POST /api/library/play HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {Encoding.UTF8.GetByteCount(body)}\r\n\r\n{body}";
         await stream.WriteAsync(Encoding.UTF8.GetBytes(request));
@@ -107,7 +107,7 @@ public class WebPlaybackServerTests
 
         const string body = "{\"song\":{\"mid\":\"split-mid\",\"title\":\"Song\",\"artist\":\"Artist\",\"album\":\"Album\",\"duration\":180},\"context\":[]}";
         using var client = new TcpClient();
-        await client.ConnectAsync(IPAddress.Loopback, port);
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
         await using var stream = client.GetStream();
         var headers = $"POST /api/library/play HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {Encoding.UTF8.GetByteCount(body)}\r\n\r\n";
         await stream.WriteAsync(Encoding.UTF8.GetBytes(headers + body[..20]));
@@ -130,7 +130,7 @@ public class WebPlaybackServerTests
         Assert.True(server.Start(port));
 
         using var client = new TcpClient();
-        await client.ConnectAsync(IPAddress.Loopback, port);
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
         await using var stream = client.GetStream();
         await stream.WriteAsync(Encoding.ASCII.GetBytes("GET /api/comments HTTP/1.1\r\nHost: localhost\r\n\r\n"));
         await stream.FlushAsync();
@@ -148,7 +148,7 @@ public class WebPlaybackServerTests
 
         const string body = "{\"bizId\":1,\"bizType\":1,\"content\":\"test\",\"replyCommentId\":\"\"}";
         using var client = new TcpClient();
-        await client.ConnectAsync(IPAddress.Loopback, port);
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
         await using var stream = client.GetStream();
         var request = $"POST /api/comments/add HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {Encoding.UTF8.GetByteCount(body)}\r\n\r\n{body}";
         await stream.WriteAsync(Encoding.UTF8.GetBytes(request));
@@ -178,7 +178,7 @@ public class WebPlaybackServerTests
 
         const string body = "{\"position\":37.5,\"duration\":241}";
         using var client = new TcpClient();
-        await client.ConnectAsync(IPAddress.Loopback, port);
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
         await using var stream = client.GetStream();
         var request = $"POST /api/progress HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {Encoding.UTF8.GetByteCount(body)}\r\n\r\n{body}";
         await stream.WriteAsync(Encoding.UTF8.GetBytes(request));
