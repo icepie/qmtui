@@ -120,19 +120,22 @@ async function run() {
   const pageErrors = [];
   await page.addInitScript(() => {
     window.__qmtuiE2eStates = [];
-    const NativeEventSource = window.EventSource;
-    window.EventSource = class extends NativeEventSource {
-      constructor(...args) {
-        super(...args);
-        if (String(args[0]).includes('/api/events')) {
-          this.addEventListener('message', (event) => {
-            try {
-              window.__qmtuiE2eStates.push(JSON.parse(event.data));
-            } catch {}
-          });
-        }
+    // 状态推送走 WebSocket：外层包一个构造函数来采集状态帧
+    //（直接子类化 WebSocket 在部分实现里不可靠）。
+    const NativeWebSocket = window.WebSocket;
+    // biome-ignore lint/complexity/useArrowFunction: 桥接层用 new WebSocket(...)，箭头函数不能当构造函数
+    window.WebSocket = function (...args) {
+      const socket = new NativeWebSocket(...args);
+      if (String(args[0] || '').includes('/api/ws')) {
+        socket.addEventListener('message', (event) => {
+          try {
+            window.__qmtuiE2eStates.push(JSON.parse(event.data));
+          } catch {}
+        });
       }
+      return socket;
     };
+    window.WebSocket.prototype = NativeWebSocket.prototype;
   });
   const failedRequests = [];
   page.on('pageerror', (error) => pageErrors.push(String(error.stack || error)));
@@ -343,7 +346,7 @@ async function run() {
     );
 
     console.log(
-      `E2E passed: ${layout.route}; account, navigation, search, controls, SSE progress, comments, favorite, quality`
+      `E2E passed: ${layout.route}; account, navigation, search, controls, WebSocket progress, comments, favorite, quality`
     );
   } finally {
     try {

@@ -7,6 +7,7 @@
  *   applying: boolean;
  *   source: unknown;
  *   reconnectTimer: ReturnType<typeof setTimeout> | null;
+ *   reconnectDelay: number;
  *   currentSongKey: string;
  *   currentDuration: number;
  *   currentLyricSignature: string;
@@ -45,6 +46,7 @@ export const state = {
   applying: false,
   source: null,
   reconnectTimer: null,
+  reconnectDelay: 1000,
   currentSongKey: '',
   currentDuration: 0,
   currentLyricSignature: '',

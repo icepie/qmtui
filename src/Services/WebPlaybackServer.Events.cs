@@ -1,4 +1,6 @@
 using System.Net.Sockets;
+using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using QmTui.Models;
@@ -9,13 +11,18 @@ namespace QmTui.Services;
 
 public sealed partial class WebPlaybackServer
 {
-    private async Task HandleSseEventsAsync(TcpClient client, NetworkStream stream, CancellationToken ct)
+    private async Task HandleWebSocketEventsAsync(TcpClient client, NetworkStream stream, string? secWebSocketKey, CancellationToken ct)
     {
-        string headers = "HTTP/1.1 200 OK\r\n" +
-                         "Content-Type: text/event-stream\r\n" +
-                         "Cache-Control: no-cache\r\n" +
-                         "Connection: keep-alive\r\n" +
-                         "Access-Control-Allow-Origin: *\r\n\r\n";
+        if (string.IsNullOrWhiteSpace(secWebSocketKey))
+        {
+            await SendResponseAsync(stream, 400, "Bad Request", "text/plain", "Missing Sec-WebSocket-Key", ct).ConfigureAwait(false);
+            return;
+        }
+
+        string headers = "HTTP/1.1 101 Switching Protocols\r\n" +
+                         "Upgrade: websocket\r\n" +
+                         "Connection: Upgrade\r\n" +
+                         $"Sec-WebSocket-Accept: {ComputeWebSocketAccept(secWebSocketKey)}\r\n\r\n";
 
         byte[] headerBytes = Encoding.ASCII.GetBytes(headers);
         using (var initWriteCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
@@ -25,41 +32,52 @@ public sealed partial class WebPlaybackServer
             await stream.FlushAsync(initWriteCts.Token).ConfigureAwait(false);
         }
 
-        var sseClient = new SseClient(client, stream, ct);
-        lock (_sseLock)
+        var socket = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions
         {
-            _sseClients.Add(sseClient);
+            IsServer = true,
+            // 由 BCL 按间隔发送 PING 帧：远端/反代链路最怕空闲连接被中间设备掐断。
+            KeepAliveInterval = TimeSpan.FromSeconds(30),
+        });
+
+        var wsClient = new WebSocketClient(client, socket, ct);
+        lock (_wsLock)
+        {
+            _wsClients.Add(wsClient);
         }
 
-        var syncJson = BuildStateJson("sync");
-        sseClient.Channel.Writer.TryWrite($"data: {syncJson}\r\n\r\n");
+        wsClient.Channel.Writer.TryWrite(BuildStateJson("sync"));
 
-        using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(sseClient.Cts.Token);
+        // 客户端帧不承载语义（控制指令仍走 POST），这个循环负责 PING/PONG 与感知对端关闭。
         _ = Task.Run(async () =>
         {
+            var buffer = new byte[512];
             try
             {
-                while (!heartbeatCts.Token.IsCancellationRequested)
+                while (!wsClient.Cts.Token.IsCancellationRequested)
                 {
-                    await Task.Delay(15000, heartbeatCts.Token).ConfigureAwait(false);
-                    sseClient.Channel.Writer.TryWrite(": ping\r\n\r\n");
+                    var result = await socket.ReceiveAsync(buffer.AsMemory(), wsClient.Cts.Token).ConfigureAwait(false);
+                    if (result.MessageType == WebSocketMessageType.Close) break;
                 }
             }
-            catch {}
-        }, heartbeatCts.Token);
+            catch
+            {
+            }
+            finally
+            {
+                try { wsClient.Cts.Cancel(); } catch {}
+            }
+        }, CancellationToken.None);
 
         try
         {
-            var reader = sseClient.Channel.Reader;
-            while (await reader.WaitToReadAsync(sseClient.Cts.Token).ConfigureAwait(false))
+            var reader = wsClient.Channel.Reader;
+            while (await reader.WaitToReadAsync(wsClient.Cts.Token).ConfigureAwait(false))
             {
-                while (reader.TryRead(out var msg))
+                while (reader.TryRead(out var message))
                 {
-                    byte[] bytes = Encoding.UTF8.GetBytes(msg);
-                    using var writeCts = CancellationTokenSource.CreateLinkedTokenSource(sseClient.Cts.Token);
+                    using var writeCts = CancellationTokenSource.CreateLinkedTokenSource(wsClient.Cts.Token);
                     writeCts.CancelAfter(TimeSpan.FromSeconds(3));
-                    await stream.WriteAsync(bytes.AsMemory(0, bytes.Length), writeCts.Token).ConfigureAwait(false);
-                    await stream.FlushAsync(writeCts.Token).ConfigureAwait(false);
+                    await socket.SendAsync(Encoding.UTF8.GetBytes(message).AsMemory(), WebSocketMessageType.Text, endOfMessage: true, writeCts.Token).ConfigureAwait(false);
                 }
             }
         }
@@ -68,23 +86,32 @@ public sealed partial class WebPlaybackServer
         }
         finally
         {
-            try { heartbeatCts.Cancel(); } catch {}
             int remainingClients;
-            lock (_sseLock)
+            lock (_wsLock)
             {
-                _sseClients.Remove(sseClient);
-                remainingClients = _sseClients.Count;
+                _wsClients.Remove(wsClient);
+                remainingClients = _wsClients.Count;
             }
-            sseClient.Dispose();
+
+            try
+            {
+                using var closeCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, null, closeCts.Token).ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+
+            wsClient.Dispose();
 
             if (remainingClients == 0 && _listener != null)
             {
                 _ = Task.Run(async () =>
                 {
                     await Task.Delay(2000).ConfigureAwait(false);
-                    lock (_sseLock)
+                    lock (_wsLock)
                     {
-                        if (_sseClients.Count == 0 && _listener != null)
+                        if (_wsClients.Count == 0 && _listener != null)
                         {
                             AppLogger.Info("WebPlaybackServer", "All web clients disconnected.");
                             AllClientsDisconnected?.Invoke();
@@ -93,6 +120,16 @@ public sealed partial class WebPlaybackServer
                 }, CancellationToken.None);
             }
         }
+    }
+
+    private const string WebSocketHandshakeGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+    /// <summary>RFC 6455 握手所需：base64(sha1(Sec-WebSocket-Key + 固定 GUID))。</summary>
+    private static string ComputeWebSocketAccept(string secWebSocketKey)
+    {
+        Span<byte> hash = stackalloc byte[20];
+        SHA1.HashData(Encoding.ASCII.GetBytes(secWebSocketKey + WebSocketHandshakeGuid), hash);
+        return Convert.ToBase64String(hash);
     }
 
     private void HandleApiAction(string body)
@@ -202,7 +239,7 @@ public sealed partial class WebPlaybackServer
     public void BroadcastState(string eventType)
     {
         var json = BuildStateJson(eventType);
-        BroadcastSse(json);
+        BroadcastStateJson(json);
     }
     public string GetStateJson(string eventType) => BuildStateJson(eventType);
 
@@ -346,19 +383,18 @@ public sealed partial class WebPlaybackServer
                 .Replace("\n", "\\n");
     }
 
-    private void BroadcastSse(string json)
+    private void BroadcastStateJson(string json)
     {
-        string message = $"data: {json}\r\n\r\n";
-        List<SseClient> targets;
-        lock (_sseLock)
+        List<WebSocketClient> targets;
+        lock (_wsLock)
         {
-            if (_sseClients.Count == 0) return;
-            targets = new List<SseClient>(_sseClients);
+            if (_wsClients.Count == 0) return;
+            targets = new List<WebSocketClient>(_wsClients);
         }
 
         foreach (var client in targets)
         {
-            client.Channel.Writer.TryWrite(message);
+            client.Channel.Writer.TryWrite(json);
         }
     }
 }

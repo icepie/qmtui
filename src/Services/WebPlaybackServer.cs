@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -15,17 +16,17 @@ namespace QmTui.Services;
 /// </summary>
 public sealed partial class WebPlaybackServer : IDisposable
 {
-    private sealed class SseClient : IDisposable
+    private sealed class WebSocketClient : IDisposable
     {
         public TcpClient Client { get; }
-        public NetworkStream Stream { get; }
+        public WebSocket Socket { get; }
         public Channel<string> Channel { get; }
         public CancellationTokenSource Cts { get; }
 
-        public SseClient(TcpClient client, NetworkStream stream, CancellationToken parentToken)
+        public WebSocketClient(TcpClient client, WebSocket socket, CancellationToken parentToken)
         {
             Client = client;
-            Stream = stream;
+            Socket = socket;
             Channel = System.Threading.Channels.Channel.CreateBounded<string>(new BoundedChannelOptions(32)
             {
                 FullMode = BoundedChannelFullMode.DropOldest,
@@ -39,7 +40,7 @@ public sealed partial class WebPlaybackServer : IDisposable
         {
             try { Cts.Cancel(); } catch { }
             try { Cts.Dispose(); } catch { }
-            try { Stream.Dispose(); } catch { }
+            try { Socket.Dispose(); } catch { }
             try { Client.Dispose(); } catch { }
         }
     }
@@ -49,8 +50,8 @@ public sealed partial class WebPlaybackServer : IDisposable
     private readonly object _lock = new();
     private bool _isDisposed;
 
-    private readonly List<SseClient> _sseClients = new();
-    private readonly object _sseLock = new();
+    private readonly List<WebSocketClient> _wsClients = new();
+    private readonly object _wsLock = new();
 
     public int Port { get; private set; }
     public string LocalUrl => Port > 0 ? $"http://0.0.0.0:{Port}/" : "";
@@ -253,7 +254,7 @@ public sealed partial class WebPlaybackServer : IDisposable
         }
         catch {}
 
-        bool keepAliveForSse = false;
+        bool keepAliveForWebSocket = false;
         var stream = client.GetStream();
 
         try
@@ -294,6 +295,7 @@ public sealed partial class WebPlaybackServer : IDisposable
             int contentLength = 0;
             // Extract request metadata needed by byte-sensitive request bodies.
             string? rangeHeader = null;
+            string? webSocketKey = null;
             foreach (var line in lines)
             {
                 if (line.StartsWith("Range:", StringComparison.OrdinalIgnoreCase))
@@ -303,6 +305,10 @@ public sealed partial class WebPlaybackServer : IDisposable
                 else if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
                 {
                     int.TryParse(line["Content-Length:".Length..].Trim(), out contentLength);
+                }
+                else if (line.StartsWith("Sec-WebSocket-Key:", StringComparison.OrdinalIgnoreCase))
+                {
+                    webSocketKey = line["Sec-WebSocket-Key:".Length..].Trim();
                 }
             }
 
@@ -363,10 +369,10 @@ public sealed partial class WebPlaybackServer : IDisposable
                 {
                     await HandleAudioStreamAsync(stream, rangeHeader, ct).ConfigureAwait(false);
                 }
-                else if (path == "/api/events")
+                else if (path == "/api/ws")
                 {
-                    keepAliveForSse = true;
-                    await HandleSseEventsAsync(client, stream, ct).ConfigureAwait(false);
+                    keepAliveForWebSocket = true;
+                    await HandleWebSocketEventsAsync(client, stream, webSocketKey, ct).ConfigureAwait(false);
                     return;
                 }
                 else if (path == "/api/account")
@@ -634,7 +640,7 @@ public sealed partial class WebPlaybackServer : IDisposable
             }
             finally
             {
-                if (!keepAliveForSse)
+                if (!keepAliveForWebSocket)
                 {
                     try { stream.Dispose(); } catch {}
                     try { client.Dispose(); } catch {}
@@ -962,13 +968,13 @@ public sealed partial class WebPlaybackServer : IDisposable
             }
             catch {}
 
-            lock (_sseLock)
+            lock (_wsLock)
             {
-                foreach (var client in _sseClients)
+                foreach (var client in _wsClients)
                 {
                     try { client.Dispose(); } catch {}
                 }
-                _sseClients.Clear();
+                _wsClients.Clear();
             }
 
             try

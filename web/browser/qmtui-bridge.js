@@ -421,27 +421,32 @@ import { state } from './bridge/state.js';
 
   function connect() {
     state.source?.close();
-    state.source = new EventSource('/api/events');
-    state.source.onmessage = (event) => {
+    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    const socket = new WebSocket(`${scheme}://${location.host}/api/ws`);
+    state.source = socket;
+    socket.onmessage = (event) => {
       try {
         applyState(JSON.parse(event.data));
       } catch {}
     };
-    state.source.onopen = () => {
+    socket.onopen = () => {
+      state.reconnectDelay = 1000;
       document.documentElement.dataset.qmtuiBridge = 'connected';
       // Re-assert the authoritative account on (re)connect: the UserInfo
-      // component may have re-mounted while the EventSource was down, resetting
-      // its display state that only renderAccount restores.
+      // component may have re-mounted while the socket was down, resetting its
+      // display state that only renderAccount restores.
       api('/api/account')
         .then(renderAccount)
         .catch(() => {});
     };
-    state.source.onerror = () => {
-      state.source?.close();
+    socket.onclose = () => {
       document.documentElement.dataset.qmtuiBridge = 'disconnected';
       clearTimeout(state.reconnectTimer);
-      state.reconnectTimer = setTimeout(connect, 1800);
+      // 远端/反代链路常会静默断开，退避重连避免频繁握手打爆上游。
+      state.reconnectDelay = Math.min(state.reconnectDelay * 2, 15000);
+      state.reconnectTimer = setTimeout(connect, state.reconnectDelay);
     };
+    socket.onerror = () => socket.close();
   }
 
   function findReactInstance(root, name) {
