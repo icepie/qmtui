@@ -274,7 +274,8 @@ public sealed partial class MainWindow
 
         _songListView.SetMessage($"正在加载歌单「{playlist.Title}」歌曲...", $"歌单: {playlist.Title} (加载中)");
 
-        var songs = await MusicApi.GetPlaylistSongsAsync(playlist, 1, PlaylistPageSize);
+        var result = await MusicApi.GetPlaylistSongsAsync(playlist, 1, PlaylistPageSize);
+        var songs = result.Songs;
 
         Application.Invoke(() =>
         {
@@ -284,8 +285,9 @@ public sealed partial class MainWindow
                 return;
             }
 
-            _hasMorePlaylistSongs = songs.Count >= PlaylistPageSize;
-            var title = $"歌单: {playlist.Title} (共 {songs.Count} 首" + (_hasMorePlaylistSongs ? "，向下滚动加载更多" : "，已全部加载") + "，按 Esc 退回)";
+            _hasMorePlaylistSongs = result.HasMore;
+            var totalHint = result.Total > 0 ? $"/{result.Total}" : "";
+            var title = $"歌单: {playlist.Title} (共 {songs.Count}{totalHint} 首" + (_hasMorePlaylistSongs ? "，向下滚动加载更多" : "，已全部加载") + "，按 Esc 退回)";
             _songListView.SetSongs(songs, title);
             if (_activeSong != null)
             {
@@ -310,7 +312,8 @@ public sealed partial class MainWindow
 
         try
         {
-            var moreSongs = await MusicApi.GetPlaylistSongsAsync(_currentDrilldownPlaylist, nextPage, PlaylistPageSize);
+            var moreResult = await MusicApi.GetPlaylistSongsAsync(_currentDrilldownPlaylist, nextPage, PlaylistPageSize);
+            var moreSongs = moreResult.Songs;
 
             Application.Invoke(() =>
             {
@@ -318,12 +321,10 @@ public sealed partial class MainWindow
                 {
                     _playlistCurrentPage = nextPage;
                     var currentCount = _songListView.Songs.Count;
-                    if (moreSongs.Count < PlaylistPageSize)
-                    {
-                        _hasMorePlaylistSongs = false;
-                    }
+                    _hasMorePlaylistSongs = moreResult.HasMore;
+                    var totalHint = moreResult.Total > 0 ? $"/{moreResult.Total}" : "";
 
-                    var title = $"歌单: {_currentDrilldownPlaylist.Title} (共 {currentCount + moreSongs.Count} 首" + (_hasMorePlaylistSongs ? "，向下滚动加载更多" : "，已全部加载") + "，按 Esc 退回)";
+                    var title = $"歌单: {_currentDrilldownPlaylist.Title} (共 {currentCount + moreSongs.Count}{totalHint} 首" + (_hasMorePlaylistSongs ? "，向下滚动加载更多" : "，已全部加载") + "，按 Esc 退回)";
                     _songListView.AppendSongs(moreSongs, title);
                     if (_activeSong != null)
                     {

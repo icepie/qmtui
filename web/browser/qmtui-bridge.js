@@ -761,6 +761,17 @@ import { state } from './bridge/state.js';
     runtime.ReactDOM.render(element, host);
   }
 
+  // 服务端返回的 total 与本地已列出条数可能相差几首“无音频”占位条目（mid 为空、无音频档，
+  // 服务端列得出来但我们播不了），文案里如实说明，避免看起来像少了几首。
+  function songsCountText(total, loaded, hasMore, suffix = '首歌曲') {
+    if (total <= 0) return `${loaded}${hasMore ? '+' : ''} ${suffix}`;
+    if (hasMore) return `共 ${total} ${suffix}（已载入 ${loaded} 首）`;
+    const missing = total - loaded;
+    return missing > 0
+      ? `共 ${total} ${suffix}（其中 ${missing} 首无音频，暂不可播放）`
+      : `共 ${total} ${suffix}`;
+  }
+
   function renderSongList(host, songs, options = {}) {
     const runtime = getRuntime();
     if (!runtime) return;
@@ -1005,6 +1016,7 @@ import { state } from './bridge/state.js';
         items: first.songs || [],
         page: 1,
         hasMore: !!first.hasMore,
+        total: Number(first.total) || 0,
         loading: false,
       };
 
@@ -1021,7 +1033,7 @@ import { state } from './bridge/state.js';
         detailHeader({
           image: playlist.picUrl || playlist.picurl || songCover(songsState.items[0]),
           title: playlist.name,
-          subtitle: `${songsState.items.length}${songsState.hasMore ? '+' : ''} 首歌曲`,
+          subtitle: songsCountText(songsState.total, songsState.items.length, songsState.hasMore),
           playAll: true,
           favorite: canFavorite && !fav,
           unfavorite: canFavorite && fav,
@@ -1051,6 +1063,7 @@ import { state } from './bridge/state.js';
         songsState.items = result.songs || [];
         songsState.page = 1;
         songsState.hasMore = !!result.hasMore;
+        songsState.total = Number(result.total) || songsState.total;
         renderList();
         const header = host.querySelector('.mod_detail.album');
         if (header) header.outerHTML = headerHtml(isFavorite);
@@ -1066,6 +1079,7 @@ import { state } from './bridge/state.js';
           songsState.items = songsState.items.concat(result.songs || []);
           songsState.page += 1;
           songsState.hasMore = !!result.hasMore;
+          songsState.total = Number(result.total) || songsState.total;
           renderList();
         } catch (error) {
           showToast(error.message, true);
@@ -1800,12 +1814,19 @@ import { state } from './bridge/state.js';
 
   async function renderLikePage() {
     const token = ++state.routeToken;
-    const page = renderPageShell('我喜欢', '', ['歌曲', '歌单', '专辑']);
+    const page = renderPageShell('我喜欢', '正在同步…', ['歌曲', '歌单', '专辑']);
     if (!page) return;
 
     let playlists = [];
     let albums = [];
-    const songsState = { items: [], page: 1, hasMore: true, loading: false, loaded: false };
+    const songsState = {
+      items: [],
+      page: 1,
+      hasMore: true,
+      total: 0,
+      loading: false,
+      loaded: false,
+    };
     let activeTab = 0;
 
     const loadCollections = async () => {
@@ -1851,7 +1872,12 @@ import { state } from './bridge/state.js';
         s.items = reset ? raw : s.items.concat(raw);
         s.page = targetPage;
         s.hasMore = !!result.hasMore;
+        s.total = Number(result.total) || s.total;
         s.loaded = true;
+        const subtitle = page.host.querySelector('.qmtui-page__head p');
+        if (subtitle) {
+          subtitle.textContent = songsCountText(s.total, s.items.length, s.hasMore, '首');
+        }
         if (activeTab === 0) renderSongs(reset);
       } catch (error) {
         if (token !== state.routeToken) return;

@@ -96,10 +96,9 @@ public sealed partial class WebPlaybackServer
     private static async Task HandleFavoriteSongsAsync(NetworkStream stream, string rawPath, CancellationToken ct)
     {
         if (!await RequireLoginAsync(stream, ct).ConfigureAwait(false)) return;
-        var playlist = new Playlist(201, "我喜欢", 0);
         int page = ParsePositiveQueryParameter(rawPath, "page", 1);
-        var songs = await MusicApi.GetPlaylistSongsAsync(playlist, page, WebLibraryPageSize, ct).ConfigureAwait(false);
-        await SendLibraryJsonAsync(stream, new WebLibrarySongsResponse("我喜欢", page, songs, songs.Count == WebLibraryPageSize), ct).ConfigureAwait(false);
+        var result = await MusicApi.GetFavoriteSongsAsync(page, WebLibraryPageSize, ct).ConfigureAwait(false);
+        await SendLibraryJsonAsync(stream, new WebLibrarySongsResponse("我喜欢", page, result.Songs, result.HasMore, result.Total), ct).ConfigureAwait(false);
     }
 
 
@@ -126,8 +125,8 @@ public sealed partial class WebPlaybackServer
             ParseLongQueryParameter(rawPath, "tid"),
             ParseBooleanQueryParameter(rawPath, "isFav"));
         int page = ParsePositiveQueryParameter(rawPath, "page", 1);
-        var songs = await MusicApi.GetPlaylistSongsAsync(playlist, page, WebLibraryPageSize, ct).ConfigureAwait(false);
-        await SendLibraryJsonAsync(stream, new WebLibrarySongsResponse(playlist.Name, page, songs, songs.Count == WebLibraryPageSize), ct).ConfigureAwait(false);
+        var result = await MusicApi.GetPlaylistSongsAsync(playlist, page, WebLibraryPageSize, ct).ConfigureAwait(false);
+        await SendLibraryJsonAsync(stream, new WebLibrarySongsResponse(playlist.Name, page, result.Songs, result.HasMore, result.Total), ct).ConfigureAwait(false);
     }
 
     private static async Task HandleLibraryAlbumAsync(NetworkStream stream, string rawPath, CancellationToken ct)
@@ -561,7 +560,7 @@ public sealed partial class WebPlaybackServer
         SendLibraryJsonAsync(stream, value, WebLibraryJsonContext.Default.WebSingerSongsResponse, ct);
 }
 
-internal sealed record WebLibrarySongsResponse(string Title, int Page, List<Song> Songs, bool HasMore);
+internal sealed record WebLibrarySongsResponse(string Title, int Page, List<Song> Songs, bool HasMore, int Total = 0);
 internal sealed record WebLibraryPlaylistsResponse(List<Playlist> Playlists, bool HasMore);
 internal sealed record WebLibraryAlbumsResponse(List<Album> Albums, bool HasMore);
 internal sealed record WebLibrarySingersResponse(List<SingerSummary> Singers, bool HasMore);

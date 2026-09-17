@@ -66,90 +66,17 @@ public sealed partial class MusicApi
     /// 并发探测指定歌曲在 4 档品质下的真实可用状态及直链
     /// </summary>
 
-    public sealed record FavoriteSongsResult(List<Song> Songs, int Total, bool HasMore);
+    /// <summary>歌单歌曲的分页结果；Total 与 HasMore 均以服务端返回为准。</summary>
+    public sealed record PlaylistSongsResult(List<Song> Songs, int Total, bool HasMore);
 
-    public static async Task<FavoriteSongsResult> GetFavoriteSongsAsync(int page = 1, int pageSize = 100, CancellationToken ct = default)
-    {
-        if (!UserSession.Current.IsLoggedIn) return new FavoriteSongsResult([], 0, false);
+    /// <summary>QQ 对 size &gt; 200 的分页请求会退化成只回 20 首，故单次请求上限固定为 200。</summary>
+    public const int MaxSongPageSize = 200;
 
-        await LoginService.EnsureMusicKeyAsync(ct).ConfigureAwait(false);
-
-        var uin = UserSession.Current.Uin;
-        var url = "https://u.y.qq.com/cgi-bin/musicu.fcg";
-
-        var payload = $"{{\"comm\":{{\"uin\":\"{uin}\",\"format\":\"json\",\"ct\":19,\"cv\":1,\"authst\":\"\"}}," +
-            $"\"req_fav\":{{\"module\":\"music.musicasset.PlaylistDetailRead\",\"method\":\"GetUniformSongDetailInfo\"," +
-            $"\"param\":{{\"uin\":\"{uin}\",\"dirid\":201,\"bPaged\":true,\"offset\":{(page - 1) * pageSize},\"size\":{pageSize}}}}}}}";
-
-        try
-        {
-            using var req = new HttpRequestMessage(HttpMethod.Post, url);
-            req.Content = new StringContent(payload, Encoding.UTF8, "application/json");
-
-            var cookieHeader = UserSession.Current.GetCookieHeader();
-            if (!string.IsNullOrEmpty(cookieHeader))
-            {
-                req.Headers.Add("Cookie", cookieHeader);
-            }
-
-            using var resp = await s_httpClient.SendAsync(req, ct).ConfigureAwait(false);
-            var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            var list = new List<Song>(pageSize > 0 ? pageSize : 30);
-            int total = 0;
-            bool hasMore = false;
-
-            if (root.TryGetProperty("req_fav", out var favObj) &&
-                favObj.TryGetProperty("data", out var dataObj))
-            {
-                if (dataObj.TryGetProperty("total", out var totalProp) && totalProp.ValueKind == JsonValueKind.Number)
-                {
-                    total = totalProp.GetInt32();
-                }
-                else if (dataObj.TryGetProperty("total_song_num", out var tsnProp) && tsnProp.ValueKind == JsonValueKind.Number)
-                {
-                    total = tsnProp.GetInt32();
-                }
-
-                if (dataObj.TryGetProperty("hasmore", out var hmProp))
-                {
-                    if (hmProp.ValueKind == JsonValueKind.Number) hasMore = hmProp.GetInt32() == 1;
-                    else if (hmProp.ValueKind == JsonValueKind.True) hasMore = true;
-                    else if (hmProp.ValueKind == JsonValueKind.False) hasMore = false;
-                }
-
-                int rawCount = 0;
-                if (dataObj.TryGetProperty("list", out var songArray) && songArray.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var item in songArray.EnumerateArray())
-                    {
-                        rawCount++;
-                        var song = ParseSongFromElement(item);
-                        if (song != null) list.Add(song);
-                    }
-                }
-
-                // 容错判定：若服务端未直接返回 hasmore=true，但只要未达到 total 或原始批次等于 pageSize，均继续保持分页可拉取
-                if (!hasMore && total > 0 && ((page - 1) * pageSize + rawCount < total))
-                {
-                    hasMore = true;
-                }
-                else if (!hasMore && total == 0 && rawCount >= pageSize)
-                {
-                    hasMore = true;
-                }
-            }
-
-            return new FavoriteSongsResult(list, total, hasMore);
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("MusicApi", "GetFavoriteSongsAsync error", ex);
-            return new FavoriteSongsResult([], 0, false);
-        }
-    }
+    /// <summary>
+    /// 获取“我喜欢”（dirId=201）歌曲，等价于按 dirId 读取歌单。
+    /// </summary>
+    public static Task<PlaylistSongsResult> GetFavoriteSongsAsync(int page = 1, int pageSize = 100, CancellationToken ct = default)
+        => GetPlaylistSongsAsync(new Playlist(201, "我喜欢", 0), page, pageSize, ct);
 
     /// <summary>
     /// 获取用户每日推荐歌单（每日30首）
@@ -238,18 +165,20 @@ public sealed partial class MusicApi
     /// <summary>
     /// 获取指定歌单内的所有歌曲（自建歌单与外部收藏歌单均支持）
     /// </summary>
-    public static async Task<List<Song>> GetPlaylistSongsAsync(Playlist playlist, int page = 1, int pageSize = 100, CancellationToken ct = default)
+    public static async Task<PlaylistSongsResult> GetPlaylistSongsAsync(Playlist playlist, int page = 1, int pageSize = 100, CancellationToken ct = default)
     {
         if (!playlist.IsFav)
         {
-            if (!UserSession.Current.IsLoggedIn) return [];
+            if (!UserSession.Current.IsLoggedIn) return new PlaylistSongsResult([], 0, false);
             await LoginService.EnsureMusicKeyAsync(ct).ConfigureAwait(false);
 
             var uin = UserSession.Current.Uin;
+            var size = Math.Clamp(pageSize, 1, MaxSongPageSize);
+            var offset = Math.Max(page - 1, 0) * size;
             var url = "https://u.y.qq.com/cgi-bin/musicu.fcg";
             var payload = $"{{\"comm\":{{\"uin\":\"{uin}\",\"format\":\"json\",\"ct\":19,\"cv\":1,\"authst\":\"\"}}," +
                 $"\"req_pl\":{{\"module\":\"music.musicasset.PlaylistDetailRead\",\"method\":\"GetUniformSongDetailInfo\"," +
-                $"\"param\":{{\"uin\":\"{uin}\",\"dirid\":{playlist.DirId},\"bPaged\":true,\"offset\":{(page - 1) * pageSize},\"size\":{pageSize}}}}}}}";
+                $"\"param\":{{\"uin\":\"{uin}\",\"dirid\":{playlist.DirId},\"bPaged\":true,\"offset\":{offset},\"size\":{size}}}}}}}";
 
             try
             {
@@ -262,25 +191,55 @@ public sealed partial class MusicApi
                 var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
                 using var doc = JsonDocument.Parse(json);
                 var root = doc.RootElement;
-                if (root.TryGetProperty("req_pl", out var plObj) &&
-                    plObj.TryGetProperty("data", out var dataObj) &&
-                    dataObj.TryGetProperty("list", out var songArray) &&
-                    songArray.ValueKind == JsonValueKind.Array)
+                if (!root.TryGetProperty("req_pl", out var plObj) ||
+                    !plObj.TryGetProperty("data", out var dataObj))
                 {
-                    var list = new List<Song>(songArray.GetArrayLength());
+                    return new PlaylistSongsResult([], 0, false);
+                }
+
+                int total = 0;
+                if (dataObj.TryGetProperty("total", out var totalProp) && totalProp.ValueKind == JsonValueKind.Number)
+                {
+                    total = totalProp.GetInt32();
+                }
+                else if (dataObj.TryGetProperty("total_song_num", out var tsnProp) && tsnProp.ValueKind == JsonValueKind.Number)
+                {
+                    total = tsnProp.GetInt32();
+                }
+
+                bool? serverHasMore = null;
+                if (dataObj.TryGetProperty("hasmore", out var hmProp))
+                {
+                    if (hmProp.ValueKind == JsonValueKind.Number) serverHasMore = hmProp.GetInt32() != 0;
+                    else if (hmProp.ValueKind == JsonValueKind.True) serverHasMore = true;
+                    else if (hmProp.ValueKind == JsonValueKind.False) serverHasMore = false;
+                }
+
+                int rawCount = 0;
+                var list = new List<Song>(size);
+                if (dataObj.TryGetProperty("list", out var songArray) && songArray.ValueKind == JsonValueKind.Array)
+                {
                     foreach (var item in songArray.EnumerateArray())
                     {
+                        rawCount++;
                         var song = ParseSongFromElement(item);
                         if (song != null) list.Add(song);
                     }
-                    return list;
                 }
-                return [];
+
+                // 是否还有下一页必须问服务端：无 mid 的占位条目会被 ParseSongFromElement 丢弃，
+                // 按“本页是否满”判断会把中间的空洞页当成最后一页（1470 首曾停在第 9 页）。
+                // 故优先用 total 推算，其次用服务端 hasmore，原始条数兜底。
+                var hasMore = total > 0
+                    ? offset + rawCount < total
+                    : serverHasMore ?? rawCount >= size;
+
+                return new PlaylistSongsResult(list, total, hasMore);
             }
             catch (Exception ex)
             {
                 AppLogger.Error("MusicApi", $"GetPlaylistSongsAsync (dirId: {playlist.DirId}) error", ex);
-                return [];
+                return new PlaylistSongsResult([], 0, false);
             }
         }
         else
@@ -313,14 +272,22 @@ public sealed partial class MusicApi
                         var song = ParseSongFromElement(item);
                         if (song != null) list.Add(song);
                     }
-                    return list;
+
+                    int favTotal = list.Count;
+                    if (dataObj.TryGetProperty("total_song_num", out var favTotalProp) && favTotalProp.ValueKind == JsonValueKind.Number)
+                    {
+                        favTotal = favTotalProp.GetInt32();
+                    }
+
+                    // 收藏歌单走 uniform_get_Dissinfo，一次返回全量，无需分页。
+                    return new PlaylistSongsResult(list, favTotal, false);
                 }
-                return [];
+                return new PlaylistSongsResult([], 0, false);
             }
             catch (Exception ex)
             {
                 AppLogger.Error("MusicApi", $"GetPlaylistSongsAsync (tid: {playlist.Tid}) error", ex);
-                return [];
+                return new PlaylistSongsResult([], 0, false);
             }
         }
     }

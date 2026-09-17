@@ -664,16 +664,21 @@ public sealed partial class MainWindow
                 }
             }
 
-            // 2. 预先查询目标歌单当前歌曲（支持最大 300 首检查）
-            var existingSongs = await MusicApi.GetPlaylistSongsAsync(targetPlaylist, 1, 300).ConfigureAwait(false);
-            if (existingSongs.Count > 0)
+            // 2. 逐页查询目标歌单当前歌曲，判断是否已存在
+            //    （单次上限 200 首，size 更大时 QQ 只回 20 首，必须靠分页覆盖）
+            for (int page = 1; ; page++)
             {
-                bool alreadyInPlaylist = existingSongs.Any(s =>
+                var existingSongs = await MusicApi.GetPlaylistSongsAsync(targetPlaylist, page, MusicApi.MaxSongPageSize).ConfigureAwait(false);
+                bool alreadyInPlaylist = existingSongs.Songs.Any(s =>
                     (!string.IsNullOrEmpty(s.Mid) && s.Mid == song.Mid) ||
                     (s.Id > 0 && song.Id > 0 && s.Id == song.Id));
                 if (alreadyInPlaylist)
                 {
                     return AddToPlaylistResult.AlreadyExists;
+                }
+                if (!existingSongs.HasMore)
+                {
+                    break;
                 }
             }
 
