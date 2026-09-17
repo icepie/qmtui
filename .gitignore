@@ -3,6 +3,8 @@ obj/
 *.dbg
 *.tmp
 *.media
+__pycache__/
+*.py[cod]
 TestResults/
 .cache/
 .agents/

@@ -144,9 +144,15 @@ public sealed partial class WebPlaybackServer : IDisposable
     public event Action? TogglePlayRequested;
     public event Action? ToggleFavoriteRequested;
     public event Action? ToggleModeRequested;
+    /// <summary>直接指定播放模式（设置面板用；ToggleModeRequested 只做轮换）。</summary>
+    public event Action<PlaybackMode>? ModeRequested;
     public event Action? ToggleQualityRequested;
     public event Action<AudioQualityTier>? QualityRequested;
     public event Action? PlaybackEnded;
+    /// <summary>把歌曲加入播放队列（bool = true 表示插到下一首，false 表示追加到队尾）。</summary>
+    public event Action<Song, bool>? QueueAddRequested;
+    /// <summary>按索引把歌曲移出播放队列。</summary>
+    public event Action<int>? QueueRemoveRequested;
     public event Action<double>? SeekRequested;
     public event Action<int>? VolumeRequested;
     public event Action<double, double>? ProgressReported;
@@ -383,6 +389,10 @@ public sealed partial class WebPlaybackServer : IDisposable
                 {
                     await HandleLibraryAlbumSearchAsync(stream, rawPath, ct).ConfigureAwait(false);
                 }
+                else if (path == "/api/library/search/singers")
+                {
+                    await HandleSingerSearchAsync(stream, rawPath, ct).ConfigureAwait(false);
+                }
                 else if (path == "/api/library/recommend/daily")
                 {
                     await HandleDailyRecommendationsAsync(stream, ct).ConfigureAwait(false);
@@ -403,6 +413,10 @@ public sealed partial class WebPlaybackServer : IDisposable
                 {
                     await HandleLibraryPlaylistAsync(stream, rawPath, ct).ConfigureAwait(false);
                 }
+                else if (path == "/api/library/playlist/favorite")
+                {
+                    await HandlePlaylistFavoriteStateAsync(stream, rawPath, ct).ConfigureAwait(false);
+                }
                 else if (path == "/api/library/album")
                 {
                     await HandleLibraryAlbumAsync(stream, rawPath, ct).ConfigureAwait(false);
@@ -414,6 +428,22 @@ public sealed partial class WebPlaybackServer : IDisposable
                 else if (path == "/api/comments")
                 {
                     await HandleCommentsAsync(stream, rawPath, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/singer/detail")
+                {
+                    await HandleSingerDetailAsync(stream, rawPath, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/singer/songs")
+                {
+                    await HandleSingerSongsAsync(stream, rawPath, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/singer/albums")
+                {
+                    await HandleSingerAlbumsAsync(stream, rawPath, ct).ConfigureAwait(false);
+                }
+                else if (path == "/api/singer/favorite")
+                {
+                    await HandleSingerFavoriteStateAsync(stream, rawPath, ct).ConfigureAwait(false);
                 }
                 else
                 {
@@ -516,6 +546,18 @@ public sealed partial class WebPlaybackServer : IDisposable
                     {
                         await HandleLibraryPlayAsync(stream, bodyPart, ct).ConfigureAwait(false);
                     }
+                    else if (path == "/api/queue/add")
+                    {
+                        await HandleQueueAddAsync(stream, bodyPart, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/queue/remove")
+                    {
+                        await HandleQueueRemoveAsync(stream, bodyPart, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/download")
+                    {
+                        await HandleDownloadAsync(stream, bodyPart, ct).ConfigureAwait(false);
+                    }
                     else if (path == "/api/login/start")
                     {
                         await HandleLoginStartAsync(stream, bodyPart, ct).ConfigureAwait(false);
@@ -535,6 +577,14 @@ public sealed partial class WebPlaybackServer : IDisposable
                     else if (path == "/api/library/playlist/delete")
                     {
                         await HandleDeletePlaylistAsync(stream, bodyPart, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/library/playlist/favorite")
+                    {
+                        await HandlePlaylistFavoriteMutationAsync(stream, bodyPart, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/singer/favorite")
+                    {
+                        await HandleSingerFavoriteMutationAsync(stream, bodyPart, ct).ConfigureAwait(false);
                     }
                     else if (path == "/api/library/playlist/song/add")
                     {

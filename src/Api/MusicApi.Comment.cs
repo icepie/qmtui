@@ -42,49 +42,62 @@ public sealed partial class MusicApi
     {
         if (bizId <= 0) return new([], false, 0, "");
         int size = Math.Clamp(pageSize, 1, 50);
-        int pageIndex = Math.Max(0, page - 1);
-        int command = method == "GetHotCommentList" ? 8 : 6;
-        var url = $"https://c.y.qq.com/base/fcgi-bin/fcg_global_comment_h5.fcg?biztype={(int)bizType}&topid={bizId}&cmd={command}&pagenum={pageIndex}&pagesize={size}";
+        int pageNum = Math.Max(0, page - 1);
+        bool hot = method == "GetHotCommentList";
+
+        // c.y.qq.com 的 fcg_global_comment_h5.fcg 会被限流（HTTP 500），改用
+        // u.y.qq.com/cgi-bin/musicu.fcg 的 music.globalComment.CommentReadServer。
+        // 该接口用 PageNum（0-based）直接翻页，无需 cursor；热门需 HotType=1。
+        var param = new CommentReadParams(
+            (int)bizType,
+            bizId.ToString(),
+            "",
+            size,
+            pageNum,
+            hot ? 1 : null,
+            hot ? 0 : null,
+            hot ? null : "",
+            hot ? null : 0);
+        var payload = new CommentReadGatewayRequest(
+            CreateCommentGatewayCommon(),
+            new CommentReadRequest(
+                "music.globalComment.CommentReadServer",
+                hot ? "GetHotCommentList" : "GetNewCommentList",
+                param));
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.TryAddWithoutValidation("Origin", "https://y.qq.com");
-            request.Headers.Referrer = new Uri("https://y.qq.com/");
-            var cookies = UserSession.Current.GetCookieHeader();
-            if (!string.IsNullOrWhiteSpace(cookies)) request.Headers.TryAddWithoutValidation("Cookie", cookies);
-            using var response = await s_httpClient.SendAsync(request, ct).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
+            using var doc = JsonDocument.Parse(await PostMusicuAsync(payload, ct).ConfigureAwait(false));
             var root = doc.RootElement;
-            var containerName = method == "GetHotCommentList" ? "hot_comment" : "comment";
-            if (!root.TryGetProperty(containerName, out var container) ||
-                !container.TryGetProperty("commentlist", out var comments) ||
+            if (!root.TryGetProperty("getCmtList", out var container) ||
+                ReadCommentInt(container, "code") != 0 ||
+                !container.TryGetProperty("data", out var data) ||
+                !data.TryGetProperty("CommentList", out var commentList) ||
+                !commentList.TryGetProperty("Comments", out var comments) ||
                 comments.ValueKind != JsonValueKind.Array)
             {
                 return new([], false, 0, "");
             }
 
-            int total = container.TryGetProperty("commenttotal", out var totalValue) && totalValue.TryGetInt32(out var parsedTotal)
-                ? parsedTotal
-                : comments.GetArrayLength();
+            int total = ReadCommentInt(commentList, "Total");
+            bool hasMore = ReadCommentInt(commentList, "HasMore") != 0;
             var result = new List<MusicComment>(comments.GetArrayLength());
             foreach (var item in comments.EnumerateArray())
             {
-                string id = ReadCommentText(item, "commentid");
+                string id = ReadCommentText(item, "CmId");
                 result.Add(new MusicComment(
                     id,
                     id,
-                    ReadCommentText(item, "nick"),
-                    ReadCommentText(item, "avatarurl"),
-                    ReadCommentText(item, "rootcommentcontent"),
-                    ReadCommentLong(item, "time"),
-                    ReadCommentInt(item, "praisenum"),
-                    item.TryGetProperty("middlecommentcontent", out var replies) && replies.ValueKind == JsonValueKind.Array ? replies.GetArrayLength() : 0,
-                    ReadCommentInt(item, "ispraise") != 0,
-                    ReadCommentInt(item, "enable_delete") != 0));
+                    ReadCommentText(item, "Nick"),
+                    ReadCommentText(item, "Avatar"),
+                    ReadCommentText(item, "Content"),
+                    ReadCommentLong(item, "PubTime"),
+                    ReadCommentInt(item, "PraiseNum"),
+                    ReadCommentInt(item, "ReplyCnt"),
+                    ReadCommentInt(item, "IsPraised") != 0,
+                    ReadCommentInt(item, "IsSelf") != 0));
             }
-            return new(result, (pageIndex + 1) * size < total, total, "");
+            return new(result, hasMore, total, "");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -207,26 +220,29 @@ public sealed partial class MusicApi
 
 internal sealed record CommentReadGatewayRequest(
     [property: JsonPropertyName("comm")] CommentGatewayCommon Comm,
-    [property: JsonPropertyName("comments")] CommentReadRequest Comments);
+    [property: JsonPropertyName("getCmtList")] CommentReadRequest GetCmtList);
 internal sealed record CommentWriteGatewayRequest(
     [property: JsonPropertyName("comm")] CommentGatewayCommon Comm,
     [property: JsonPropertyName("comment")] CommentWriteRequest Comment);
 internal sealed record CommentGatewayCommon(string Uin, string Format, int Ct, int Cv, string Authst);
-internal sealed record CommentReadRequest(string Module, string Method, CommentQueryParams Param);
-internal sealed record CommentWriteRequest(string Module, string Method, CommentWriteParams Param);
-internal sealed record CommentQueryParams(
+internal sealed record CommentReadRequest(
+    [property: JsonPropertyName("module")] string Module,
+    [property: JsonPropertyName("method")] string Method,
+    [property: JsonPropertyName("param")] CommentReadParams Param);
+internal sealed record CommentWriteRequest(
+    [property: JsonPropertyName("module")] string Module,
+    [property: JsonPropertyName("method")] string Method,
+    [property: JsonPropertyName("param")] CommentWriteParams Param);
+internal sealed record CommentReadParams(
     int BizType,
     string BizId,
-    int? BizSubType,
     string LastCommentSeqNo,
     int PageSize,
     int PageNum,
-    int PicEnable,
     int? HotType,
     int? WithAirborne,
-    string? HashTagID,
-    int? SelfSeeEnable,
-    int? AudioEnable);
+    string? FromCommentId,
+    int? WithHot);
 internal sealed record CommentWriteParams(
     string? Content,
     int BizType,
@@ -239,7 +255,7 @@ internal sealed record CommentWriteParams(
 [JsonSerializable(typeof(CommentReadGatewayRequest))]
 [JsonSerializable(typeof(CommentGatewayCommon))]
 [JsonSerializable(typeof(CommentWriteGatewayRequest))]
-[JsonSerializable(typeof(CommentQueryParams))]
+[JsonSerializable(typeof(CommentReadParams))]
 [JsonSerializable(typeof(CommentWriteParams))]
 internal sealed partial class CommentApiJsonContext : JsonSerializerContext
 {

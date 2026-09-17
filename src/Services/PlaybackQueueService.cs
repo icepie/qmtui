@@ -135,6 +135,32 @@ public sealed class PlaybackQueueService
     }
 
     /// <summary>
+    /// 追加歌曲到队列末尾（web「添加到播放队列」）
+    /// </summary>
+    public void Append(Song song)
+    {
+        lock (_lock)
+        {
+            _activeSongs.Add(song);
+            if (CurrentIndex < 0) CurrentIndex = 0;
+
+            if (_shuffleIndices.Count > 0)
+            {
+                // 随机序里排到最后，与本方法「加到队尾」的语义一致。
+                _shuffleIndices.Add(_activeSongs.Count - 1);
+            }
+            else
+            {
+                RebuildShuffleQueue(_activeSongs.Count, CurrentIndex);
+            }
+        }
+
+        AppLogger.Info("PlaybackQueue", $"Song appended: {song.Title} - {song.Artist}");
+        QueueChanged?.Invoke();
+        SaveQueueDebounced();
+    }
+
+    /// <summary>
     /// 从队列中移除指定索引的歌曲
     /// </summary>
     public bool RemoveAt(int index)

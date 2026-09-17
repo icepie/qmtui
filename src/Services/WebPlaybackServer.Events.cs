@@ -127,6 +127,14 @@ public sealed partial class WebPlaybackServer
                     case "toggle_mode":
                         ToggleModeRequested?.Invoke();
                         break;
+                    case "set_mode":
+                        if (doc.RootElement.TryGetProperty("mode", out var modeProp) &&
+                            modeProp.TryGetInt32(out var modeValue) &&
+                            Enum.IsDefined(typeof(PlaybackMode), modeValue))
+                        {
+                            ModeRequested?.Invoke((PlaybackMode)modeValue);
+                        }
+                        break;
                     case "quality":
                     case "toggle_quality":
                         ToggleQualityRequested?.Invoke();
@@ -273,17 +281,25 @@ public sealed partial class WebPlaybackServer
         }
         else
         {
-            sb.Append('{');
-            sb.Append($"\"id\":{CurrentSong.Id},");
-            sb.Append($"\"mid\":\"{EscapeJson(CurrentSong.Mid)}\",");
-            sb.Append($"\"title\":\"{EscapeJson(CurrentSong.Title)}\",");
-            sb.Append($"\"artist\":\"{EscapeJson(CurrentSong.Artist)}\",");
-            sb.Append($"\"album\":\"{EscapeJson(CurrentSong.Album)}\",");
-            sb.Append($"\"albumMid\":\"{EscapeJson(CurrentSong.AlbumMid)}\",");
-            sb.Append($"\"quality\":\"{EscapeJson(CurrentSong.Quality)}\",");
-            sb.Append($"\"isLocal\":{(CurrentSong.IsLocal ? "true" : "false")}");
-            sb.Append("},");
+            AppendSongJson(sb, CurrentSong);
+            sb.Append(',');
         }
+
+        IReadOnlyList<Song> queue = PlaybackQueueService.Instance.ActiveSongs;
+        int queueIndex = PlaybackQueueService.Instance.CurrentIndex;
+        if (queue.Count == 0 && CurrentSong != null)
+        {
+            queue = new List<Song> { CurrentSong };
+            queueIndex = 0;
+        }
+        sb.Append("\"songList\":[");
+        for (int i = 0; i < queue.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            AppendSongJson(sb, queue[i]);
+        }
+        sb.Append("],");
+        sb.Append($"\"currentIndex\":{queueIndex},");
 
         sb.Append("\"lyrics\":[");
         if (CurrentLyrics != null && CurrentLyrics.Count > 0)
@@ -303,6 +319,22 @@ public sealed partial class WebPlaybackServer
 
         sb.Append('}');
         return sb.ToString();
+    }
+
+    private static void AppendSongJson(StringBuilder sb, Song song)
+    {
+        sb.Append('{');
+        sb.Append($"\"id\":{song.Id},");
+        sb.Append($"\"mid\":\"{EscapeJson(song.Mid)}\",");
+        sb.Append($"\"title\":\"{EscapeJson(song.Title)}\",");
+        sb.Append($"\"artist\":\"{EscapeJson(song.Artist)}\",");
+        sb.Append($"\"album\":\"{EscapeJson(song.Album)}\",");
+        sb.Append($"\"albumMid\":\"{EscapeJson(song.AlbumMid)}\",");
+        sb.Append($"\"duration\":{song.Duration},");
+        sb.Append($"\"mediaMid\":\"{EscapeJson(song.EffectiveMediaMid)}\",");
+        sb.Append($"\"quality\":\"{EscapeJson(song.Quality)}\",");
+        sb.Append($"\"isLocal\":{(song.IsLocal ? "true" : "false")}");
+        sb.Append('}');
     }
 
     private static string EscapeJson(string? s)

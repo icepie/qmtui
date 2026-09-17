@@ -34,6 +34,16 @@ public class SignAndCryptoTests
     }
 
     [Fact]
+    public void ComputeAndroidSign_MatchesKnownPythonReference()
+    {
+        // 参考值由独立 Python zzc_sign 实现（Part1=[23,14,6,36,16,7,19]）计算得到。
+        var payload = "{\"comm\":{\"ct\":11,\"cv\":14090008,\"v\":14090008,\"chid\":\"10003505\",\"qq\":\"1152921504811191096\",\"authst\":\"W_X_TESTKEY_FOR_SIGN_TEST\",\"tmeAppID\":\"qqmusic\",\"tmeLoginType\":1},\"req_0\":{\"module\":\"music.musicasset.PlaylistDetailWrite\",\"method\":\"AddSonglist\",\"param\":{\"dirId\":201,\"tid\":0,\"bFmtUtf8\":true,\"v_songInfo\":[{\"songId\":263152292,\"songType\":0}]}}}";
+        var sign = MusicApi.ComputeAndroidSign(payload);
+
+        Assert.Equal("zzcb4bea59b232i4lhwlodjcgabydlamtvkuca6e69755", sign);
+    }
+
+    [Fact]
     public void EncryptAg1Request_DecryptWithKey_RoundtripMatchesOriginal()
     {
         var originalPayload = "{\"test\":\"qqmusictui-test-payload-12345\"}";

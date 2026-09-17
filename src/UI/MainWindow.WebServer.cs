@@ -129,6 +129,17 @@ public sealed partial class MainWindow
             });
         };
         server.ToggleModeRequested += () => Application.Invoke(() => TogglePlaybackMode());
+        server.ModeRequested += mode => Application.Invoke(() => SetPlaybackMode(mode));
+        server.QueueAddRequested += (song, insertNext) => Application.Invoke(() =>
+        {
+            if (insertNext) PlaybackQueueService.Instance.InsertNext(song);
+            else PlaybackQueueService.Instance.Append(song);
+            server.BroadcastState("queue_change");
+        });
+        server.QueueRemoveRequested += index => Application.Invoke(() =>
+        {
+            if (PlaybackQueueService.Instance.RemoveAt(index)) server.BroadcastState("queue_change");
+        });
         server.ToggleQualityRequested += () => Application.Invoke(async () =>
         {
             await CycleQualityTierAsync(allowHiRes: false);

@@ -22,6 +22,7 @@ public sealed partial class MusicApi
     private static readonly byte[] s_ag1RequestKey = [189, 48, 95, 16, 208, 255, 116, 182, 239, 84, 218, 184, 53, 181, 225, 207];
     private static readonly byte[] s_ag1ResponseKey = [122, 63, 140, 29, 94, 155, 47, 10, 108, 77, 126, 139, 31, 58, 92, 157, 14, 43, 111, 74, 129];
     private static readonly int[] s_part1Indexes = [23, 14, 6, 36, 16, 40, 7, 19];
+    private static readonly int[] s_androidPart1Indexes = [23, 14, 6, 36, 16, 7, 19];
     private static readonly int[] s_part2Indexes = [16, 1, 32, 12, 19, 27, 8, 5];
     private static readonly byte[] s_scrambleValues = [89, 39, 179, 150, 218, 82, 58, 252, 177, 52, 186, 123, 120, 64, 242, 133, 143, 161, 121, 179];
 
@@ -34,15 +35,22 @@ public sealed partial class MusicApi
     /// <summary>
     /// 计算现代网关 zzc 签名
     /// </summary>
-    public static string ComputeZzcSign(string text)
+    public static string ComputeZzcSign(string text) => ComputeZzcSign(text, s_part1Indexes);
+
+    /// <summary>
+    /// 计算 Android App 网关（musics.fcg）的 zzc 签名（Part1 索引与 AG-1 不同）
+    /// </summary>
+    public static string ComputeAndroidSign(string text) => ComputeZzcSign(text, s_androidPart1Indexes);
+
+    private static string ComputeZzcSign(string text, int[] part1Indexes)
     {
         var hashBytes = SHA1.HashData(Encoding.UTF8.GetBytes(text));
         var hex = Convert.ToHexString(hashBytes);
 
-        var p1 = new char[s_part1Indexes.Length];
-        for (int i = 0; i < s_part1Indexes.Length; i++)
+        var p1 = new char[part1Indexes.Length];
+        for (int i = 0; i < part1Indexes.Length; i++)
         {
-            int idx = s_part1Indexes[i];
+            int idx = part1Indexes[i];
             p1[i] = idx < hex.Length ? hex[idx] : '0';
         }
 
@@ -129,6 +137,31 @@ public sealed partial class MusicApi
     }
 
     /// <summary>
+    /// 向 Android App 网关（musics.fcg）发送明文 JSON + zzc 签名请求，返回响应 JSON。
+    /// 微信登录态下“我喜欢”（dirId=201）的写操作必须走此协议（AG-1 会返回 80105）。
+    /// </summary>
+    public static async Task<string> PostAndroidAsync(string jsonPayload, CancellationToken ct = default)
+    {
+        var sign = ComputeAndroidSign(jsonPayload);
+        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var url = $"https://u.y.qq.com/cgi-bin/musics.fcg?_={ts}&sign={sign}";
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, url);
+        req.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+        req.Headers.TryAddWithoutValidation("User-Agent", "QQMusic 14090008(android 15)");
+        req.Headers.TryAddWithoutValidation("Origin", "https://y.qq.com");
+        req.Headers.Referrer = new Uri("https://y.qq.com/");
+
+        var cookieHeader = UserSession.Current.GetCookieHeader();
+        if (!string.IsNullOrEmpty(cookieHeader))
+        {
+            req.Headers.Add("Cookie", cookieHeader);
+        }
+
+        using var resp = await s_httpClient.SendAsync(req, ct).ConfigureAwait(false);
+        return await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+    }
+
     /// <summary>
     /// 搜索歌曲（支持分页，每页默认 25 首）
     /// </summary>

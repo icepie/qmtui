@@ -9,6 +9,11 @@ namespace QmTui.Api;
 /// </summary>
 public sealed record SearchPage<T>(List<T> Items, int Total, bool HasMore);
 
+/// <summary>
+/// 歌手搜索结果条目（search_type=1 的 singer 桶）
+/// </summary>
+public sealed record SingerSummary(string Mid, long Id, string Name, string PicUrl, int SongCount);
+
 public sealed partial class MusicApi
 {
     public static async Task<SearchPage<Playlist>> SearchPlaylistsAsync(
@@ -41,6 +46,43 @@ public sealed partial class MusicApi
         {
             AppLogger.Error("Search", $"SearchPlaylistsAsync failed for query '{query}'", ex);
             return new SearchPage<Playlist>([], 0, false);
+        }
+    }
+
+    /// <summary>
+    /// 搜索歌手（search_type=1，singer 桶）。歌手名与头像取自 singerName/singerPic，歌曲数为 songNum。
+    /// </summary>
+    public static async Task<SearchPage<SingerSummary>> SearchSingersAsync(
+        string query,
+        int page = 1,
+        int pageSize = 25,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return new SearchPage<SingerSummary>([], 0, false);
+
+        try
+        {
+            return await SearchDesktopAsync(query, searchType: 1, page, pageSize, static data =>
+            {
+                var singers = new List<SingerSummary>();
+                foreach (var item in EnumerateDesktopSearchList(data, "singer"))
+                {
+                    string mid = ReadText(item, "singerMID", "singerMid", "mid");
+                    string name = StripSearchMarkup(ReadText(item, "singerName", "name", "title"));
+                    if (string.IsNullOrWhiteSpace(mid) || string.IsNullOrWhiteSpace(name)) continue;
+
+                    long id = ReadLong(item, "singerID", "singerId", "id");
+                    string pic = ReadText(item, "singerPic", "singerPicUrl", "pic", "picurl");
+                    int songCount = (int)ReadLong(item, "songNum", "song_num", "songnum");
+                    singers.Add(new SingerSummary(mid, id, name, pic, songCount));
+                }
+                return singers;
+            }, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            AppLogger.Error("Search", $"SearchSingersAsync failed for query '{query}'", ex);
+            return new SearchPage<SingerSummary>([], 0, false);
         }
     }
 
@@ -122,6 +164,14 @@ public sealed partial class MusicApi
         }
 
         var items = parser(data);
+        if (items.Count == 0)
+        {
+            // 解析为空通常意味着响应结构变化（桶名/字段改名），把实际桶名记下来便于定位。
+            string buckets = data.TryGetProperty("body", out var bodyEl) && bodyEl.ValueKind == JsonValueKind.Object
+                ? string.Join(",", bodyEl.EnumerateObject().Select(p => p.Name))
+                : "<no body>";
+            AppLogger.Warn("Search", $"SearchDesktopAsync parsed 0 items (searchType={searchType}, buckets=[{buckets}], jsonLen={json.Length})");
+        }
         int total = 0;
         int nextPage = -1;
         if (data.TryGetProperty("meta", out var meta) && meta.ValueKind == JsonValueKind.Object)

@@ -11,7 +11,12 @@ namespace QmTui.Services;
 public sealed record WebLibraryPlayRequest(Song Song, List<Song> Context);
 internal sealed record WebPlaylistMutationRequest(long DirId, long Tid, string Name, bool IsFav, Song? Song);
 internal sealed record WebCreatePlaylistRequest(string Name);
+internal sealed record WebQueueAddRequest(Song Song, bool Next);
 internal sealed record WebAlbumMutationRequest(string AlbumMid);
+internal sealed record WebPlaylistFavoriteRequest(long Tid, bool Favorite);
+internal sealed record WebPlaylistFavoriteResponse(bool IsFavorite);
+internal sealed record WebSingerFavoriteRequest(string Mid, bool Favorite);
+internal sealed record WebSingerFavoriteResponse(bool IsFavorite);
 
 public sealed partial class WebPlaybackServer
 {
@@ -58,6 +63,22 @@ public sealed partial class WebPlaybackServer
         var albums = await MusicApi.SearchAlbumsAsync(query, page, WebLibraryPageSize, ct).ConfigureAwait(false);
         await SendLibraryJsonAsync(stream, new WebLibraryAlbumsResponse(albums.Items, albums.HasMore), ct).ConfigureAwait(false);
     }
+    private static async Task HandleSingerSearchAsync(NetworkStream stream, string rawPath, CancellationToken ct)
+    {
+        var query = GetQueryParameter(rawPath, "query");
+        int page = ParsePositiveQueryParameter(rawPath, "page", 1);
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            await SendResponseAsync(stream, 400, "Bad Request", "application/json", "{\"error\":\"query is required\"}", ct).ConfigureAwait(false);
+            return;
+        }
+
+        // 注意：歌手搜索的 num_per_page 有上限——实测 >=45 时该 CGI 直接返回空 singer 列表
+        // （code 仍为 0，jsonLen≈908），40 及以下正常。故这里固定用 20，不能沿用 WebLibraryPageSize(50)。
+        var singers = await MusicApi.SearchSingersAsync(query, page, 20, ct).ConfigureAwait(false);
+        await SendLibraryJsonAsync(stream, new WebLibrarySingersResponse(singers.Items, singers.HasMore), ct).ConfigureAwait(false);
+    }
+
     private static async Task HandleDailyRecommendationsAsync(NetworkStream stream, CancellationToken ct)
     {
         if (!await RequireLoginAsync(stream, ct).ConfigureAwait(false)) return;
@@ -134,6 +155,132 @@ public sealed partial class WebPlaybackServer
         await SendLibraryJsonAsync(stream, new WebLibraryAlbumsResponse(albums, false), ct).ConfigureAwait(false);
     }
 
+    private static async Task HandleSingerDetailAsync(NetworkStream stream, string rawPath, CancellationToken ct)
+    {
+        string mid = GetQueryParameter(rawPath, "mid") ?? "";
+        long id = ParseLongQueryParameter(rawPath, "id");
+        string name = GetQueryParameter(rawPath, "name") ?? "";
+        if (string.IsNullOrWhiteSpace(mid) && id <= 0 && string.IsNullOrWhiteSpace(name))
+        {
+            await SendResponseAsync(stream, 400, "Bad Request", "application/json", "{\"error\":\"singer mid, id or name is required\"}", ct).ConfigureAwait(false);
+            return;
+        }
+
+        var detail = await MusicApi.GetSingerDetailAsync(mid, id, name, ct).ConfigureAwait(false);
+        if (detail is null)
+        {
+            await SendResponseAsync(stream, 404, "Not Found", "application/json", "{\"error\":\"singer not found\"}", ct).ConfigureAwait(false);
+            return;
+        }
+
+        await SendLibraryJsonAsync(stream, new WebSingerDetailResponse(detail.Mid, detail.Id, detail.Name, detail.Brief, detail.Songs), ct).ConfigureAwait(false);
+    }
+
+    private static async Task HandleSingerSongsAsync(NetworkStream stream, string rawPath, CancellationToken ct)
+    {
+        string mid = GetQueryParameter(rawPath, "mid") ?? "";
+        if (string.IsNullOrWhiteSpace(mid))
+        {
+            await SendResponseAsync(stream, 400, "Bad Request", "application/json", "{\"error\":\"singer mid is required\"}", ct).ConfigureAwait(false);
+            return;
+        }
+
+        int begin = (int)Math.Max(0, ParseLongQueryParameter(rawPath, "begin"));
+        int pageSize = ParsePositiveQueryParameter(rawPath, "pageSize", 30);
+        // order: 1=热门(sort=5), 0=最新(sort=2)。不能用 ParsePositiveQueryParameter——它把 0 视为缺省并回退到 1。
+        int order = int.TryParse(GetQueryParameter(rawPath, "order"), out var parsedOrder) && parsedOrder == 0 ? 0 : 1;
+        var (songs, total) = await MusicApi.GetSingerSongListAsync(mid, begin, pageSize, order, ct).ConfigureAwait(false);
+        await SendLibraryJsonAsync(stream, new WebSingerSongsResponse(songs, total, begin + songs.Count < total), ct).ConfigureAwait(false);
+    }
+
+    private static async Task HandleSingerAlbumsAsync(NetworkStream stream, string rawPath, CancellationToken ct)
+    {
+        string mid = GetQueryParameter(rawPath, "mid") ?? "";
+        if (string.IsNullOrWhiteSpace(mid))
+        {
+            await SendResponseAsync(stream, 400, "Bad Request", "application/json", "{\"error\":\"singer mid is required\"}", ct).ConfigureAwait(false);
+            return;
+        }
+
+        int begin = (int)Math.Max(0, ParseLongQueryParameter(rawPath, "begin"));
+        int pageSize = ParsePositiveQueryParameter(rawPath, "pageSize", 30);
+        var albums = await MusicApi.GetSingerAlbumListAsync(mid, begin, pageSize, ct).ConfigureAwait(false);
+        await SendLibraryJsonAsync(stream, new WebLibraryAlbumsResponse(albums, albums.Count == pageSize), ct).ConfigureAwait(false);
+    }
+
+    private static async Task HandleSingerFavoriteStateAsync(NetworkStream stream, string rawPath, CancellationToken ct)
+    {
+        string mid = GetQueryParameter(rawPath, "mid") ?? "";
+        if (string.IsNullOrWhiteSpace(mid))
+        {
+            await SendResponseAsync(stream, 400, "Bad Request", "application/json", "{\"error\":\"singer mid is required\"}", ct).ConfigureAwait(false);
+            return;
+        }
+
+        bool isFavorite = UserSession.Current.FavoriteSingers.Contains(mid);
+        await SendLibraryJsonAsync(stream, new WebSingerFavoriteResponse(isFavorite), WebLibraryJsonContext.Default.WebSingerFavoriteResponse, ct).ConfigureAwait(false);
+    }
+
+    private static async Task HandleSingerFavoriteMutationAsync(NetworkStream stream, string body, CancellationToken ct)
+    {
+        WebSingerFavoriteRequest? request;
+        try { request = JsonSerializer.Deserialize(body, WebLibraryJsonContext.Default.WebSingerFavoriteRequest); }
+        catch (JsonException) { request = null; }
+        if (request is null || string.IsNullOrWhiteSpace(request.Mid))
+        {
+            await SendResponseAsync(stream, 400, "Bad Request", "application/json", "{\"error\":\"singer mid is required\"}", ct).ConfigureAwait(false);
+            return;
+        }
+
+        // 关注歌手是本地集合（与 TUI 的 UserSession.FavoriteSingers 共用），无服务端 CGI。
+        bool ok = request.Favorite
+            ? UserSession.Current.FavoriteSingers.Add(request.Mid)
+            : UserSession.Current.FavoriteSingers.Remove(request.Mid);
+        if (ok) UserSession.Current.Save();
+
+        await SendMutationResultAsync(stream, ok, ok
+            ? (request.Favorite ? "已关注" : "已取消关注")
+            : (request.Favorite ? "已关注过该歌手" : "尚未关注该歌手"), ct).ConfigureAwait(false);
+    }
+
+    private async Task HandleQueueAddAsync(NetworkStream stream, string body, CancellationToken ct)
+    {
+        WebQueueAddRequest? request;
+        try { request = JsonSerializer.Deserialize(body, WebLibraryJsonContext.Default.WebQueueAddRequest); }
+        catch (JsonException) { request = null; }
+        if (request?.Song is null || (string.IsNullOrWhiteSpace(request.Song.Mid) && request.Song.Id <= 0))
+        {
+            await SendResponseAsync(stream, 400, "Bad Request", "application/json", "{\"error\":\"song is required\"}", ct).ConfigureAwait(false);
+            return;
+        }
+
+        QueueAddRequested?.Invoke(request.Song, request.Next);
+        await SendResponseAsync(stream, 202, "Accepted", "application/json", "{\"ok\":true}", ct).ConfigureAwait(false);
+    }
+
+    private async Task HandleQueueRemoveAsync(NetworkStream stream, string body, CancellationToken ct)
+    {
+        int index = -1;
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("index", out var indexProp)) index = indexProp.GetInt32();
+        }
+        catch (JsonException)
+        {
+            // 落到下面的 400
+        }
+
+        if (index < 0)
+        {
+            await SendResponseAsync(stream, 400, "Bad Request", "application/json", "{\"error\":\"index is required\"}", ct).ConfigureAwait(false);
+            return;
+        }
+
+        QueueRemoveRequested?.Invoke(index);
+        await SendResponseAsync(stream, 200, "OK", "application/json", "{\"ok\":true}", ct).ConfigureAwait(false);
+    }
+
     private async Task HandleLibraryPlayAsync(NetworkStream stream, string body, CancellationToken ct)
     {
         WebLibraryPlayRequest? request;
@@ -191,6 +338,41 @@ public sealed partial class WebPlaybackServer
         var playlist = ToPlaylist(request);
         bool ok = await MusicApi.DeletePlaylistAsync(playlist, ct).ConfigureAwait(false);
         await SendMutationResultAsync(stream, ok, ok ? "删除成功" : "删除失败", ct).ConfigureAwait(false);
+    }
+
+    private static async Task HandlePlaylistFavoriteStateAsync(NetworkStream stream, string rawPath, CancellationToken ct)
+    {
+        if (!await RequireLoginAsync(stream, ct).ConfigureAwait(false)) return;
+        long tid = ParseLongQueryParameter(rawPath, "tid");
+        if (tid <= 0)
+        {
+            await SendResponseAsync(stream, 400, "Bad Request", "application/json", "{\"error\":\"playlist tid is required\"}", ct).ConfigureAwait(false);
+            return;
+        }
+
+        var state = await MusicApi.GetPlaylistFavoriteStateAsync(tid, ct).ConfigureAwait(false);
+        if (!state.Success)
+        {
+            await SendResponseAsync(stream, 502, "Bad Gateway", "application/json", "{\"error\":\"playlist favorite state unavailable\"}", ct).ConfigureAwait(false);
+            return;
+        }
+        await SendLibraryJsonAsync(stream, new WebPlaylistFavoriteResponse(state.IsFavorite), WebLibraryJsonContext.Default.WebPlaylistFavoriteResponse, ct).ConfigureAwait(false);
+    }
+
+    private static async Task HandlePlaylistFavoriteMutationAsync(NetworkStream stream, string body, CancellationToken ct)
+    {
+        if (!await RequireLoginAsync(stream, ct).ConfigureAwait(false)) return;
+        WebPlaylistFavoriteRequest? request;
+        try { request = JsonSerializer.Deserialize(body, WebLibraryJsonContext.Default.WebPlaylistFavoriteRequest); }
+        catch (JsonException) { request = null; }
+        if (request is null || request.Tid <= 0)
+        {
+            await SendResponseAsync(stream, 400, "Bad Request", "application/json", "{\"error\":\"playlist tid is required\"}", ct).ConfigureAwait(false);
+            return;
+        }
+
+        bool ok = await MusicApi.SetPlaylistFavoriteAsync(request.Tid, request.Favorite, ct).ConfigureAwait(false);
+        await SendMutationResultAsync(stream, ok, ok ? (request.Favorite ? "收藏成功" : "取消收藏成功") : (request.Favorite ? "收藏失败" : "取消收藏失败"), ct).ConfigureAwait(false);
     }
 
     private static async Task HandlePlaylistSongMutationAsync(NetworkStream stream, string body, bool add, CancellationToken ct)
@@ -392,25 +574,42 @@ public sealed partial class WebPlaybackServer
         SendLibraryJsonAsync(stream, value, WebLibraryJsonContext.Default.WebLibraryPlaylistsResponse, ct);
     private static Task SendLibraryJsonAsync(NetworkStream stream, WebLibraryAlbumsResponse value, CancellationToken ct) =>
         SendLibraryJsonAsync(stream, value, WebLibraryJsonContext.Default.WebLibraryAlbumsResponse, ct);
+    private static Task SendLibraryJsonAsync(NetworkStream stream, WebLibrarySingersResponse value, CancellationToken ct) =>
+        SendLibraryJsonAsync(stream, value, WebLibraryJsonContext.Default.WebLibrarySingersResponse, ct);
     private static Task SendLibraryJsonAsync(NetworkStream stream, WebLibraryAlbumDetailResponse value, CancellationToken ct) =>
         SendLibraryJsonAsync(stream, value, WebLibraryJsonContext.Default.WebLibraryAlbumDetailResponse, ct);
+    private static Task SendLibraryJsonAsync(NetworkStream stream, WebSingerDetailResponse value, CancellationToken ct) =>
+        SendLibraryJsonAsync(stream, value, WebLibraryJsonContext.Default.WebSingerDetailResponse, ct);
+    private static Task SendLibraryJsonAsync(NetworkStream stream, WebSingerSongsResponse value, CancellationToken ct) =>
+        SendLibraryJsonAsync(stream, value, WebLibraryJsonContext.Default.WebSingerSongsResponse, ct);
 }
 
 internal sealed record WebLibrarySongsResponse(string Title, int Page, List<Song> Songs, bool HasMore);
 internal sealed record WebLibraryPlaylistsResponse(List<Playlist> Playlists, bool HasMore);
 internal sealed record WebLibraryAlbumsResponse(List<Album> Albums, bool HasMore);
+internal sealed record WebLibrarySingersResponse(List<SingerSummary> Singers, bool HasMore);
 internal sealed record WebLibraryAlbumDetailResponse(AlbumDetail Album);
+internal sealed record WebSingerDetailResponse(string Mid, long Id, string Name, string Brief, List<Song> Songs);
+internal sealed record WebSingerSongsResponse(List<Song> Songs, int Total, bool HasMore);
 internal sealed record WebMutationResponse(bool Ok, string Message, long Id);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true, UnmappedMemberHandling = JsonUnmappedMemberHandling.Skip)]
 [JsonSerializable(typeof(WebLibraryPlayRequest))]
 [JsonSerializable(typeof(WebPlaylistMutationRequest))]
 [JsonSerializable(typeof(WebCreatePlaylistRequest))]
+[JsonSerializable(typeof(WebQueueAddRequest))]
 [JsonSerializable(typeof(WebAlbumMutationRequest))]
+[JsonSerializable(typeof(WebPlaylistFavoriteRequest))]
+[JsonSerializable(typeof(WebPlaylistFavoriteResponse))]
+[JsonSerializable(typeof(WebSingerFavoriteRequest))]
+[JsonSerializable(typeof(WebSingerFavoriteResponse))]
 [JsonSerializable(typeof(WebLibrarySongsResponse))]
 [JsonSerializable(typeof(WebLibraryPlaylistsResponse))]
 [JsonSerializable(typeof(WebLibraryAlbumsResponse))]
+[JsonSerializable(typeof(WebLibrarySingersResponse))]
 [JsonSerializable(typeof(WebLibraryAlbumDetailResponse))]
+[JsonSerializable(typeof(WebSingerDetailResponse))]
+[JsonSerializable(typeof(WebSingerSongsResponse))]
 [JsonSerializable(typeof(WebMutationResponse))]
 internal sealed partial class WebLibraryJsonContext : JsonSerializerContext
 {
