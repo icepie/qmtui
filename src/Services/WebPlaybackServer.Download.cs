@@ -11,7 +11,7 @@ namespace QmTui.Services;
 
 public sealed partial class WebPlaybackServer
 {
-    private async Task HandleDownloadAsync(NetworkStream stream, string body, CancellationToken ct)
+    private static async Task HandleDownloadAsync(NetworkStream stream, string body, CancellationToken ct)
     {
         Song? song = null;
         AudioQualityTier tier = AudioQualityTier.Standard;

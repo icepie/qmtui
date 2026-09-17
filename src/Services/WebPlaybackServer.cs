@@ -151,8 +151,6 @@ public sealed partial class WebPlaybackServer : IDisposable
     public event Action? PlaybackEnded;
     /// <summary>把歌曲加入播放队列（bool = true 表示插到下一首，false 表示追加到队尾）。</summary>
     public event Action<Song, bool>? QueueAddRequested;
-    /// <summary>按索引把歌曲移出播放队列。</summary>
-    public event Action<int>? QueueRemoveRequested;
     public event Action<double>? SeekRequested;
     public event Action<int>? VolumeRequested;
     public event Action<double, double>? ProgressReported;
@@ -549,10 +547,6 @@ public sealed partial class WebPlaybackServer : IDisposable
                     else if (path == "/api/queue/add")
                     {
                         await HandleQueueAddAsync(stream, bodyPart, ct).ConfigureAwait(false);
-                    }
-                    else if (path == "/api/queue/remove")
-                    {
-                        await HandleQueueRemoveAsync(stream, bodyPart, ct).ConfigureAwait(false);
                     }
                     else if (path == "/api/download")
                     {

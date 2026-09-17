@@ -258,29 +258,6 @@ public sealed partial class WebPlaybackServer
         await SendResponseAsync(stream, 202, "Accepted", "application/json", "{\"ok\":true}", ct).ConfigureAwait(false);
     }
 
-    private async Task HandleQueueRemoveAsync(NetworkStream stream, string body, CancellationToken ct)
-    {
-        int index = -1;
-        try
-        {
-            using var doc = JsonDocument.Parse(body);
-            if (doc.RootElement.TryGetProperty("index", out var indexProp)) index = indexProp.GetInt32();
-        }
-        catch (JsonException)
-        {
-            // 落到下面的 400
-        }
-
-        if (index < 0)
-        {
-            await SendResponseAsync(stream, 400, "Bad Request", "application/json", "{\"error\":\"index is required\"}", ct).ConfigureAwait(false);
-            return;
-        }
-
-        QueueRemoveRequested?.Invoke(index);
-        await SendResponseAsync(stream, 200, "OK", "application/json", "{\"ok\":true}", ct).ConfigureAwait(false);
-    }
-
     private async Task HandleLibraryPlayAsync(NetworkStream stream, string body, CancellationToken ct)
     {
         WebLibraryPlayRequest? request;
