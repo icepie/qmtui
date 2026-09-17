@@ -148,6 +148,7 @@ async function run() {
   let initialState;
   let modeSteps = 0;
   let favoriteChanged = false;
+  let favoriteBaseline = null;
   let qualityChanged = false;
   try {
     await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded' });
@@ -270,17 +271,54 @@ async function run() {
     );
 
     if (initialState.song) {
+      // 点击前先记下“当前这首歌”的收藏态：服务端在 favorite_result 之前还会先广播一帧
+      // favorite_change（已是新值），所以不能拿结果帧之前的帧去比较。
+      favoriteBaseline = await page.evaluate(() => {
+        const latest = [...(window.__qmtuiE2eStates || [])].reverse().find((state) => state.song);
+        return { mid: latest?.song?.mid || '', isFavorite: Boolean(latest?.isFavorite) };
+      });
       await expectPost(page, '/api/favorite', () =>
         page.locator('.player_cont_state_tool_love:visible').click()
       );
-      const favoriteResult = await waitForState(
-        page,
-        { type: 'favorite_result' },
-        'favorite result did not synchronize'
-      );
-      favoriteChanged = favoriteResult.isFavorite !== initialState.isFavorite;
-      if (!favoriteChanged) {
-        await page.locator('.qmtui-toast.error').waitFor({ state: 'visible', timeout: 5_000 });
+      // 失败路径会先弹 2.6s 的错误提示再收到状态帧，故“翻转”与“错误提示”要在同一个等待里竞速。
+      let favoriteOutcome;
+      try {
+        favoriteOutcome = await page
+          .waitForFunction(
+            (baseline) => {
+              const states = window.__qmtuiE2eStates || [];
+              const result = [...states]
+                .reverse()
+                .find((state) => state.type === 'favorite_result');
+              if (
+                result &&
+                (result.song?.mid || '') === baseline.mid &&
+                Boolean(result.isFavorite) !== baseline.isFavorite
+              ) {
+                return 'flipped';
+              }
+              if (document.querySelector('.qmtui-toast.error')) return 'toast';
+              return false;
+            },
+            favoriteBaseline,
+            { timeout: 20_000 }
+          )
+          .then((handle) => handle.jsonValue());
+      } catch {
+        favoriteOutcome = 'timeout';
+      }
+      favoriteChanged = favoriteOutcome === 'flipped';
+      if (favoriteOutcome === 'timeout') {
+        const diagnostics = await page.evaluate(() => ({
+          frames: (window.__qmtuiE2eStates || []).slice(-5).map((state) => ({
+            type: state.type,
+            isFavorite: state.isFavorite,
+            mid: state.song?.mid || '',
+          })),
+          toasts: [...document.querySelectorAll('.qmtui-toast')].map((node) => node.textContent),
+          loveLoved: Boolean(document.querySelector('.player_cont_state_tool_love.loved')),
+        }));
+        assert.fail(`喜欢切换既没有翻转状态，也没有给出错误提示: ${JSON.stringify(diagnostics)}`);
       }
       await page.locator('.player_cont_state_tool_comment:visible').click();
       await page.waitForURL(/#\/song_detail\/comment\?id=/);
@@ -366,7 +404,7 @@ async function run() {
           await postJson(page, '/api/favorite');
           await waitForState(
             page,
-            { type: 'favorite_result', isFavorite: initialState.isFavorite },
+            { type: 'favorite_result', isFavorite: favoriteBaseline?.isFavorite },
             'favorite state cleanup failed'
           );
         }
