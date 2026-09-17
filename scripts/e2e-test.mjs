@@ -139,11 +139,13 @@ async function run() {
   });
   const failedRequests = [];
   page.on('pageerror', (error) => pageErrors.push(String(error.stack || error)));
-  page.on('requestfailed', (request) =>
-    failedRequests.push(
-      `${request.method()} ${request.url()} (${request.failure()?.errorText || 'unknown error'})`
-    )
-  );
+  page.on('requestfailed', (request) => {
+    const failure = request.failure()?.errorText || 'unknown error';
+    // 第三方资源（评论头像、封面等）会在页面切换时被浏览器取消加载并报 ERR_ABORTED，
+    // 这不是应用自身的问题；同源请求仍然严格。
+    if (failure === 'net::ERR_ABORTED' && !request.url().startsWith(baseUrl)) return;
+    failedRequests.push(`${request.method()} ${request.url()} (${failure})`);
+  });
 
   let initialState;
   let modeSteps = 0;
