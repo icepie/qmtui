@@ -54,7 +54,7 @@ test('media: mapSong normalizes a raw payload', () => {
     mapSong({
       mid: 'm1',
       title: 'Song',
-      singer: [{ name: 'A' }, { title: 'B' }, {}],
+      singer: [{ name: 'A', mid: 'ma' }, { title: 'B', id: 7 }, {}],
       album: 'Album',
       duration: 200,
       id: '42',
@@ -68,6 +68,11 @@ test('media: mapSong normalizes a raw payload', () => {
       mediaMid: '',
       id: 42,
       albumMid: '',
+      // 原生 SongList 靠 singer[].mid 决定歌手名是否可点，故 mid 必须透传。
+      singers: [
+        { name: 'A', mid: 'ma', id: 0 },
+        { name: 'B', mid: '', id: 7 },
+      ],
     }
   );
 });
@@ -94,6 +99,7 @@ test('media: mapSong unwraps a { track } wrapper and object album', () => {
       mediaMid: 'file2',
       id: 0,
       albumMid: 'al2',
+      singers: [{ name: 'Ignored', mid: '', id: 0 }],
     }
   );
 });

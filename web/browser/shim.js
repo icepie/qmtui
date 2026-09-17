@@ -73,9 +73,7 @@ ipc.invoke = async (channel, payload) => {
   if (channel === 'download-song-file') {
     const song = payload?.song || {};
     const album =
-      typeof song.album === 'string'
-        ? song.album
-        : song.album?.name || song.album?.title || '';
+      typeof song.album === 'string' ? song.album : song.album?.name || song.album?.title || '';
     const body = {
       song: {
         mid: song.mid || song.media_mid || '',
@@ -96,9 +94,17 @@ ipc.invoke = async (channel, payload) => {
         body: JSON.stringify(body),
       });
       const data = await res.json();
-      return { success: Boolean(data.success), filename: data.filename || '', msg: data.message || '' };
+      return {
+        success: Boolean(data.success),
+        filename: data.filename || '',
+        msg: data.message || '',
+      };
     } catch (err) {
-      return { success: false, filename: '', msg: '下载出错: ' + (err && err.message ? err.message : String(err)) };
+      return {
+        success: false,
+        filename: '',
+        msg: `下载出错: ${err?.message || String(err)}`,
+      };
     }
   }
   return undefined;

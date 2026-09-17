@@ -434,8 +434,8 @@ a.nav_item[href*="/webDav"] {
   vertical-align: -3px;
   cursor: pointer;
   background-color: currentColor;
-  -webkit-mask: url('./assets/img/menu_c6889ace.svg') no-repeat center / contain;
-  mask: url('./assets/img/menu_c6889ace.svg') no-repeat center / contain;
+  -webkit-mask: url("./assets/img/menu_c6889ace.svg") no-repeat center / contain;
+  mask: url("./assets/img/menu_c6889ace.svg") no-repeat center / contain;
   opacity: 0;
   transition: opacity 0.15s ease, color 0.15s ease;
 }
@@ -635,7 +635,7 @@ a.nav_item[href*="/webDav"] {
     transform: translateX(0);
   }
   .main_cont.qmtui-sidebar-open::after {
-    content: '';
+    content: "";
     position: fixed;
     inset: 0;
     background: rgba(0, 0, 0, 0.5);

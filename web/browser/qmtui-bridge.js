@@ -17,12 +17,18 @@ import { state } from './bridge/state.js';
       ? `${String(Math.floor(duration / 60)).padStart(2, '0')}:${String(duration % 60).padStart(2, '0')}`
       : '';
     const cover = songCover(mapped, 500);
-    const singers = Array.isArray(mapped.singers) && mapped.singers.length
-      ? mapped.singers.map((s) => ({ name: s.name, title: s.name, mid: s.mid || '', id: s.id || 0 }))
-      : String(mapped.artist || '未知歌手')
-          .split('/')
-          .filter(Boolean)
-          .map((name) => ({ name, title: name }));
+    const singers =
+      Array.isArray(mapped.singers) && mapped.singers.length
+        ? mapped.singers.map((s) => ({
+            name: s.name,
+            title: s.name,
+            mid: s.mid || '',
+            id: s.id || 0,
+          }))
+        : String(mapped.artist || '未知歌手')
+            .split('/')
+            .filter(Boolean)
+            .map((name) => ({ name, title: name }));
     const value = {
       id: Number(mapped.id) || 0,
       mid: mapped.mid || '',
@@ -287,7 +293,7 @@ import { state } from './bridge/state.js';
           // Native queue panel reads PlayingStore, whose songList only updates
           // on PLAYING events (PAUSED carries no list). Sync it directly so the
           // full queue renders even while paused.
-          const store = state.runtime && state.runtime.store;
+          const store = state.runtime?.store;
           if (store && typeof store.JG === 'function') {
             store.JG('PlayingStore', {
               songOnPlaying: remote.isPlaying ? song : null,
@@ -814,7 +820,8 @@ import { state } from './bridge/state.js';
       const addButton = row.querySelector('.songname_menu__add');
       if (addButton) addButton.onclick = () => openSongContextMenu({}, song, songs, index, options);
       // 行内 ⋯ 入口（与播放栏同款图标）：点开原生菜单。桌面也可直接右键；触屏/发现性靠这个。
-      const menuHost = row.querySelector('.songlist_name__icon') || row.querySelector('.songlist__songname');
+      const menuHost =
+        row.querySelector('.songlist_name__icon') || row.querySelector('.songlist__songname');
       if (menuHost) {
         const more = document.createElement('a');
         more.className = 'qmtui-row-menu';
@@ -866,7 +873,8 @@ import { state } from './bridge/state.js';
     const runtime = getRuntime();
     const menu = runtime?.require?.(90658)?.current;
     const current = menu?.state?.menuContentData;
-    if (!menu?.setState || !Array.isArray(current) || current.some((item) => item?.qmtuiQueueItem)) return;
+    if (!menu?.setState || !Array.isArray(current) || current.some((item) => item?.qmtuiQueueItem))
+      return;
 
     const queueAction = (next) => () =>
       post('/api/queue/add', { song: mapSong(song), next })
@@ -876,8 +884,18 @@ import { state } from './bridge/state.js';
     menu.setState({
       menuContentData: [
         ...current,
-        { text: '下一首播放', iconClass: 'operate_menu__icon_play', fn: queueAction(true), qmtuiQueueItem: true },
-        { text: '添加到播放队列', iconClass: 'operate_menu__icon_add', fn: queueAction(false), qmtuiQueueItem: true },
+        {
+          text: '下一首播放',
+          iconClass: 'operate_menu__icon_play',
+          fn: queueAction(true),
+          qmtuiQueueItem: true,
+        },
+        {
+          text: '添加到播放队列',
+          iconClass: 'operate_menu__icon_add',
+          fn: queueAction(false),
+          qmtuiQueueItem: true,
+        },
       ],
     });
   }
@@ -897,7 +915,7 @@ import { state } from './bridge/state.js';
           index: Number.isInteger(index) ? index : 0,
           playListDetail: removable ? { dirid: Number(playlist.dirId) } : null,
           eventListener: {
-            onDelete: () => options.onRemove && options.onRemove(),
+            onDelete: () => options.onRemove?.(),
           },
         },
         { showDelete: Boolean(removable) }
@@ -908,7 +926,17 @@ import { state } from './bridge/state.js';
     }
   }
 
-  function detailHeader({ image, title, subtitle, subtitleHtml, playAll, favorite, unfavorite, follow, unfollow }) {
+  function detailHeader({
+    image,
+    title,
+    subtitle,
+    subtitleHtml,
+    playAll,
+    favorite,
+    unfavorite,
+    follow,
+    unfollow,
+  }) {
     return `
       <div class="mod_detail album">
         <div class="detail__inner">
@@ -1055,13 +1083,18 @@ import { state } from './bridge/state.js';
 
       function rebindHeader() {
         const playButton = host.querySelector('[data-detail-action="play"]');
-        if (playButton) playButton.onclick = () => {
-          if (songsState.items.length) playSong(songsState.items[0], songsState.items);
-        };
+        if (playButton)
+          playButton.onclick = () => {
+            if (songsState.items.length) playSong(songsState.items[0], songsState.items);
+          };
         const favoriteButton = host.querySelector('[data-detail-action="favorite"]');
         const unfavoriteButton = host.querySelector('[data-detail-action="unfavorite"]');
-        if (favoriteButton) favoriteButton.onclick = () => updateFavorite(true).catch((error) => showToast(error.message, true));
-        if (unfavoriteButton) unfavoriteButton.onclick = () => updateFavorite(false).catch((error) => showToast(error.message, true));
+        if (favoriteButton)
+          favoriteButton.onclick = () =>
+            updateFavorite(true).catch((error) => showToast(error.message, true));
+        if (unfavoriteButton)
+          unfavoriteButton.onclick = () =>
+            updateFavorite(false).catch((error) => showToast(error.message, true));
       }
 
       rebindHeader();
@@ -1184,7 +1217,9 @@ import { state } from './bridge/state.js';
       const detail = await api(`/api/singer/detail?${query({ mid, id, name })}`);
       if (token !== state.routeToken) return;
       const resolvedMid = detail.mid || mid || '';
-      const brief = String(detail.brief || '').replace(/\s+/g, ' ').trim();
+      const brief = String(detail.brief || '')
+        .replace(/\s+/g, ' ')
+        .trim();
       const favoriteState = resolvedMid
         ? await api(`/api/singer/favorite?mid=${encodeURIComponent(resolvedMid)}`)
         : { isFavorite: false };
@@ -1213,7 +1248,14 @@ import { state } from './bridge/state.js';
       const body = host.querySelector('#qmtui-detail-body');
 
       let activeTab = 'songs';
-      const songsState = { items: [], total: 0, order: 1, hasMore: true, loading: false, loaded: false };
+      const songsState = {
+        items: [],
+        total: 0,
+        order: 1,
+        hasMore: true,
+        loading: false,
+        loaded: false,
+      };
       const albumsState = { items: [], hasMore: true, loading: false, loaded: false };
 
       // 关注歌手：本地集合，与 TUI 的 UserSession.FavoriteSingers 共用同一份持久化数据。
@@ -1231,9 +1273,10 @@ import { state } from './bridge/state.js';
 
       function bindHeader() {
         const playButton = host.querySelector('[data-detail-action="play"]');
-        if (playButton) playButton.onclick = () => {
-          if (songsState.items.length) playSong(songsState.items[0], songsState.items);
-        };
+        if (playButton)
+          playButton.onclick = () => {
+            if (songsState.items.length) playSong(songsState.items[0], songsState.items);
+          };
         const followButton = host.querySelector('[data-detail-action="follow"]');
         const unfollowButton = host.querySelector('[data-detail-action="unfollow"]');
         if (followButton) followButton.onclick = () => toggleFollow(true);
@@ -1725,7 +1768,8 @@ import { state } from './bridge/state.js';
         </div>
       </div>`;
     } catch (error) {
-      if (token === state.routeToken) page.body.innerHTML = `<div class="qmtui-empty">${escapeHtml(error.message)}</div>`;
+      if (token === state.routeToken)
+        page.body.innerHTML = `<div class="qmtui-empty">${escapeHtml(error.message)}</div>`;
     }
   }
 
@@ -2023,7 +2067,9 @@ import { state } from './bridge/state.js';
         };
         // 播放栏与全屏封面的歌手名可点击进入歌手页（原生按歌手逐个渲染 span，
         // 分隔符 '/' 会挂在相邻 span 尾部，故剥离后再跳转）。
-        const singerNode = event.target.closest('.player_cont_state_inline_desc, .cover_singer_link');
+        const singerNode = event.target.closest(
+          '.player_cont_state_inline_desc, .cover_singer_link'
+        );
         if (singerNode) {
           const singer = (singerNode.textContent || '').replace(/[\s/、,，·]+$/, '').trim();
           if (singer) {
@@ -2205,7 +2251,9 @@ import { state } from './bridge/state.js';
             'div',
             { className: 'qmtui-setting__label' },
             React.createElement('span', null, label),
-            hint ? React.createElement('span', { className: 'qmtui-setting__hint c_tx_thin' }, hint) : null
+            hint
+              ? React.createElement('span', { className: 'qmtui-setting__hint c_tx_thin' }, hint)
+              : null
           ),
           React.createElement('div', { className: 'qmtui-setting__control' }, ...controls)
         );
@@ -2269,15 +2317,14 @@ import { state } from './bridge/state.js';
     const MOBILE_MAX = 768;
 
     const reset = () => {
-      document
-        .querySelectorAll('.cover_layout.qmtui-show-lyric')
-        .forEach((el) => el.classList.remove('qmtui-show-lyric'));
+      for (const el of document.querySelectorAll('.cover_layout.qmtui-show-lyric')) {
+        el.classList.remove('qmtui-show-lyric');
+      }
     };
 
     document.addEventListener('click', (event) => {
       if (window.innerWidth > MOBILE_MAX) return;
-      const target =
-        event.target instanceof Element ? event.target : event.target.parentElement;
+      const target = event.target instanceof Element ? event.target : event.target.parentElement;
       if (!target) return;
       const layout = target.closest('.cover_layout.cover_layout--show');
       if (!layout) return;

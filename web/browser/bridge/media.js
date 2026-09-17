@@ -1,4 +1,4 @@
-/** @typedef {{ name?: string | null; title?: string | null }} SingerPayload */
+/** @typedef {{ name?: string | null; title?: string | null; mid?: string | null; id?: string | number | null }} SingerPayload */
 /** @typedef {{ id?: string | number | null; mid?: string | null; name?: string | null; title?: string | null }} AlbumPayload */
 /**
  * Fields consumed from QQ Music responses and qmtui's flattened song objects.
@@ -12,6 +12,7 @@
  * @property {string | null} [name]
  * @property {string | null} [artist]
  * @property {SingerPayload[] | null} [singer]
+ * @property {SingerPayload[] | null} [singers]
  * @property {string | AlbumPayload | null} [album]
  * @property {string | null} [albumname]
  * @property {string | null} [albumMid]
@@ -70,7 +71,7 @@ export const songCover = (song, size = 300) => {
 export const albumCover = (album) =>
   `/cover?mid=${encodeURIComponent(album?.mid || '')}&albumMid=${encodeURIComponent(album?.mid || '')}&size=300`;
 
-/** @typedef {{ mid: string; title: string; artist: string; album: string; duration: number; mediaMid: string; id: number; albumMid: string }} MappedSong */
+/** @typedef {{ mid: string; title: string; artist: string; album: string; duration: number; mediaMid: string; id: number; albumMid: string; singers: Array<{ name: string; mid: string; id: number }> }} MappedSong */
 
 /**
  * Normalize a QQ Music track payload into a flat, stable song shape for the UI.

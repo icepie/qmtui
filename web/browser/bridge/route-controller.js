@@ -105,7 +105,7 @@ export function createRouteController({
     if (pathname.startsWith('/singer_detail')) {
       const params = new URLSearchParams(search);
       let mid = params.get('mid');
-      let id = params.get('id');
+      const id = params.get('id');
       let name = params.get('name');
       // 原生 jump(PAGE_TYPE.SINGER) 传的是嵌套 url（.../singer_detail?singermid=MID），需解出 singermid。
       if (!mid && !id && !name) {
