@@ -32,6 +32,7 @@ import {
 	playlistCardOpenedAtom,
 } from "../../states/appAtoms.ts";
 import { NowPlaylistCard } from "../NowPlaylistCard/index.tsx";
+
 import styles from "./index.module.css";
 
 export const NowPlayingBar: FC = () => {

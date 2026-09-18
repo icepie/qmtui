@@ -18,6 +18,8 @@ import { router } from "../../router.tsx";
 import { db, type Song } from "../../utils/db-client.ts";
 import { useDbQuery } from "../../utils/use-db-query.ts";
 import { useSongCover } from "../../utils/use-song-cover.ts";
+// qmtui 修改：歌单行的下拉菜单里加「喜欢 / 取消喜欢」
+import { useSongFavorite } from "../SongCard/index.tsx";
 
 export const PlaylistSongCard = forwardRef<
 	HTMLDivElement,
@@ -46,6 +48,8 @@ export const PlaylistSongCard = forwardRef<
 	);
 	const { t } = useTranslation();
 	const navigate = useNavigate();
+
+	const { isFavorite, toggle: toggleFavorite } = useSongFavorite(songId);
 
 	return (
 		<Skeleton
@@ -93,6 +97,9 @@ export const PlaylistSongCard = forwardRef<
 								</IconButton>
 							</DropdownMenu.Trigger>
 							<DropdownMenu.Content>
+								<DropdownMenu.Item onClick={toggleFavorite}>
+									{isFavorite ? "取消喜欢" : "喜欢"}
+								</DropdownMenu.Item>
 								<DropdownMenu.Item onClick={() => onPlayList(songIndex)}>
 									<Trans i18nKey="page.playlist.music.dropdown.playMusic">
 										播放音乐

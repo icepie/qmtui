@@ -29,7 +29,15 @@ import {
 } from "@applemusic-like-lyrics/react-full";
 import { useStore } from "jotai";
 import { type FC, useEffect, useRef } from "react";
-import { initAudioThread, listenQmtuiFrames, setQmtuiLibraryLookup } from "../../utils/player.ts";
+import {
+	initAudioThread,
+	listenQmtuiFrames,
+	qmtuiLyricTimeOf,
+	setQmtuiLibraryLookup,
+} from "../../utils/player.ts";
+// qmtui 修改：播放队列（右键「播放」「下一首播放」与播放列表面板都依赖它）
+import { queueManagerAtom } from "../../states/appAtoms.ts";
+import { PlayQueueManager } from "../../utils/play-queue-manager.ts";
 import { rawQmtuiSong } from "../../utils/qmtui-library.ts";
 
 const post = (path: string, body?: unknown) =>
@@ -74,6 +82,7 @@ let lastMode = "list_loop";
 
 export const QmtuiMusicContext: FC = () => {
 	const store = useStore();
+	// qmtui 修改：放大播放器（歌词页）里的音量控制
 	const anchorRef = useRef<{ position: number; timestamp: number } | null>(null);
 	const playingRef = useRef(false);
 	const lastFramePosRef = useRef(-1);
@@ -111,7 +120,9 @@ export const QmtuiMusicContext: FC = () => {
 		store.set(
 			onChangeVolumeAtom,
 			toEmit((volume: number) => {
-				void post("/api/action", { action: "volume", volume });
+				// 框架的音量控件是归一化的 0~1，CLI 收 0~100
+				const normalized = Math.max(0, Math.min(1, Number(volume) || 0));
+				void post("/api/action", { action: "volume", volume: Math.round(normalized * 100) });
 			}),
 		);
 		store.set(
@@ -137,27 +148,88 @@ export const QmtuiMusicContext: FC = () => {
 				store.set(hideLyricViewAtom, false);
 			}),
 		);
-		store.set(
-			onLyricLineClickAtom,
-			toEmit((line: { startTime?: number } | number) => {
-				const ms = typeof line === "number" ? line : Number(line?.startTime) || 0;
-				void post(`/api/seek?pos=${(Math.max(0, ms) / 1000).toFixed(2)}`);
-			}),
-		);
+		// 框架这条回调拿到的事件形态里没有可用的行时间（会把 0 传给 seek，
+		// 造成「点一下就从开头重播」）；真正的行点击由下面的文档监听处理。
+		store.set(onLyricLineClickAtom, { onEmit: () => {} });
 
 		// 专辑图上方那条控制横条：框架文档说明「通常用于关闭歌词页面」，但它的
 		// onClickControlThumb 回调在浏览器里不触发，这里直接监听点击。
 		const onDocumentClick = (event: MouseEvent) => {
 			const target = event.target instanceof Element ? event.target : null;
-			if (!target?.closest('[class*="controlThumb"]')) return;
-			// 上游只有 Esc 一条关闭路径（AMLLWrapper 里的 keydown 监听），
-			// 这里复用它的处理逻辑，保证与桌面端一致。
-			window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-			store.set(isLyricPageOpenedAtom, false);
+			if (!target) return;
+			if (target.closest('[class*="controlThumb"]')) {
+				// 上游只有 Esc 一条关闭路径（AMLLWrapper 里的 keydown 监听），
+				// 这里复用它的处理逻辑，保证与桌面端一致。
+				window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+				store.set(isLyricPageOpenedAtom, false);
+				return;
+			}
+			// qmtui 修改：点击歌词行定位。内核的 DOM 渲染器不发 lyricLineClick 事件，
+			// 所以这里用「点击到的文本 → 歌词行时间」反查，再交给 CLI 跳转。
+			const lineEl = target.closest('[class*="lyricLine"]');
+			if (!lineEl) return;
+			const text = (lineEl.textContent || "").trim();
+			// 同一句歌词会在副歌里重复，按它在渲染列表里的“第几次出现”定位，
+			// 否则点第二次出现会跳到第一次出现的位置。
+			const container = lineEl.closest('[class*="amll-lyric-player"]');
+			const rendered = container
+				? Array.from(container.querySelectorAll('[class*="lyricLine"]')).filter(
+						(el) => (el.textContent || "").trim() === text,
+					)
+				: [lineEl];
+			const ms = qmtuiLyricTimeOf(text, Math.max(0, rendered.indexOf(lineEl)));
+			if (ms === null) return;
+			void post(`/api/seek?pos=${(Math.max(0, ms) / 1000).toFixed(2)}`);
 		};
 		document.addEventListener("click", onDocumentClick, true);
 
+		const queueManager = new PlayQueueManager(store);
+		store.set(queueManagerAtom, queueManager);
+		// 用 CLI 当前的队列填充管理器，但不触发播放（CLI 才是播放方）。
+		let queueHydrated = false;
+
+		// qmtui 修改：AMLL 内核默认不响应歌词行点击，打开后才会发出 lyricLineClick
+		// （框架再转成 onLyricLineClick → 我们已经接到 /api/seek）。
+		let lastCoreProbe = 0;
+		const enableLyricLineClick = (now: number) => {
+			if (now - lastCoreProbe < 1000) return;
+			lastCoreProbe = now;
+			// 内核在浏览器里退化成 div.amll-lyric-player（DOM 渲染器）
+			for (const el of document.querySelectorAll('[class*="amll-lyric-player"]')) {
+				const core = el as HTMLElement & { enableLyricLineClick?: boolean };
+				if (core.enableLyricLineClick !== true) core.enableLyricLineClick = true;
+			}
+		};
+
 		const unlisten = listenQmtuiFrames((frame) => {
+			enableLyricLineClick(performance.now());
+			// qmtui 修改：用 CLI 的队列填充管理器（只填一次），供播放列表面板与
+			// 右键菜单的「播放」「下一首播放」使用；CLI 仍是唯一的播放方，
+			// 所以只写内部列表，不调用会触发播放的 setQueue。
+			if (!queueHydrated) {
+				const list = Array.isArray(frame.songList) ? (frame.songList as Record<string, unknown>[]) : [];
+				if (list.length > 0) {
+					queueHydrated = true;
+					const queueSongs = list.map((item) => ({
+						id: String(item.id ?? item.mid ?? ""),
+						songName: String(item.title ?? ""),
+						songArtists: String(item.artist ?? ""),
+						songAlbum: String(item.album ?? ""),
+						songCover: null,
+						duration: Number(item.duration) || 0,
+					}));
+					const internal = queueManager as unknown as {
+						originalList: unknown[];
+						playList: unknown[];
+						currentIndex: number;
+					};
+					internal.originalList = [...queueSongs];
+					internal.playList = [...queueSongs];
+					const currentId = String((frame.song as Record<string, unknown> | null)?.id ?? "");
+					const index = queueSongs.findIndex((item) => item.id === currentId);
+					internal.currentIndex = index >= 0 ? index : 0;
+				}
+			}
 			const song = (frame.song ?? null) as Record<string, unknown> | null;
 			if (song) {
 				store.set(musicIdAtom, String(song.mid || ""));
@@ -184,6 +256,10 @@ export const QmtuiMusicContext: FC = () => {
 						store.set(musicLyricLinesAtom, toLyricLines(frame.lyrics) as never);
 					}
 				}
+			}
+			if (Number.isFinite(Number(frame.volume))) {
+				// 框架的音量控件是 0~1，CLI 给的是 0~100
+				store.set(musicVolumeAtom, Math.max(0, Math.min(1, Number(frame.volume) / 100)));
 			}
 			if (Number(frame.duration) > 0) {
 				store.set(musicDurationAtom, (Number(frame.duration) * 1000) | 0);
@@ -233,5 +309,9 @@ export const QmtuiMusicContext: FC = () => {
 		};
 	}, [store]);
 
-	return null;
+	// qmtui 修改：放大播放器上那层「自动隐藏鼠标」的透明遮罩会吞掉所有点击，
+	// 它是点歌词无法定位的根因；它只该隐藏光标，不该拦截指针事件。
+	return (
+		<style>{"[class*='cursorHiddenOverlay']{pointer-events:none !important;}"}</style>
+	);
 };

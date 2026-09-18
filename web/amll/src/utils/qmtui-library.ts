@@ -151,6 +151,9 @@ const QMTUI_COMMANDS = new Set([
 	"migrate_songs_batch", "migrate_playlists_batch", "set_media_controls_enabled",
 ]);
 
+// qmtui 修改：其它 Tauri 命令统一吞掉，返回 undefined（上层按可空处理）
+const noop = async () => undefined;
+
 export const isQmtuiCommand = (command: string) => QMTUI_COMMANDS.has(command);
 
 /** 把上游的 Tauri 数据命令映射到 qmtui 接口。返回 undefined 表示“不是库命令”。 */
@@ -299,4 +302,30 @@ export async function searchQmtuiCloud(keyword: string): Promise<{
 		console.error("[qmtui] 云端搜索歌单失败", error);
 	}
 	return { songs, playlists };
+}
+
+/** 当前「我喜欢」里的歌曲 mid 集合（用于判断某首歌是否已收藏）。 */
+export async function qmtuiFavoriteMids(): Promise<Set<string>> {
+	try {
+		const data = await json("/api/library/favorites/ids");
+		return new Set(((data.mids as string[]) || []).map((mid) => String(mid)));
+	} catch (error) {
+		console.error("[qmtui] 读取收藏列表失败", error);
+		return new Set();
+	}
+}
+
+/** 设置某首歌的「喜欢」状态（交给 CLI 的收藏接口处理）。 */
+export async function qmtuiSetSongFavorite(song: QmtuiSong, favorite: boolean): Promise<boolean> {
+	try {
+		const response = await fetch("/api/library/song/favorite", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ song, favorite }),
+		});
+		return response.ok;
+	} catch (error) {
+		console.error("[qmtui] 收藏失败", error);
+		return false;
+	}
 }

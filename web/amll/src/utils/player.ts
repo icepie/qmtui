@@ -206,6 +206,24 @@ export function emitAudioThreadRet<T extends keyof AudioThreadMessageMap>(
 /* ===== qmtui 修改：后端桥接（消息 -> /api/*，状态 <- /api/ws） ===== */
 const qmtuiSongs = new Map<string, Record<string, unknown>>();
 const qmtuiPrev = { songKey: "", isPlaying: false, volume: -1, position: -1 };
+// qmtui 修改：缓存最近一帧的原始歌词（含 timeMs），供「点击歌词定位」使用
+let qmtuiLyricCache: Array<{ text: string; timeMs: number }> = [];
+
+/**
+ * 按歌词文本查时间（毫秒），找不到返回 null。
+ * @param occurrence 同一句歌词的第几次出现（从 0 开始，副歌会重复）
+ */
+export const qmtuiLyricTimeOf = (text: string, occurrence = 0): number | null => {
+	const want = text.trim();
+	if (!want) return null;
+	let seen = 0;
+	for (const line of qmtuiLyricCache) {
+		if (!line.text || !want.includes(line.text)) continue;
+		if (seen === occurrence) return line.timeMs;
+		seen++;
+	}
+	return null;
+};
 let qmtuiLastFrame: Record<string, unknown> | null = null;
 type QmtuiFrameListener = (frame: Record<string, unknown>) => void;
 const qmtuiFrameListeners = new Set<QmtuiFrameListener>();
@@ -287,6 +305,11 @@ function initQmtuiBridge() {
 		const position = Number(frame.position) || 0;
 		const volume = Number(frame.volume);
 
+		if (Array.isArray(frame.lyrics)) {
+			qmtuiLyricCache = (frame.lyrics as Array<Record<string, unknown>>)
+				.map((line) => ({ text: String(line.text ?? "").trim(), timeMs: Number(line.timeMs) || 0 }))
+				.filter((line) => line.text.length > 0);
+		}
 		if (songKey && songKey !== qmtuiPrev.songKey) {
 			qmtuiPrev.songKey = songKey;
 			const load = qmtuiSynthLoadAudio();
@@ -354,12 +377,16 @@ async function qmtuiSendMessage(type: string, data?: Record<string, unknown>): P
 			}
 			break;
 		}
-		case "setVolume":
+		case "setVolume": {
+			// 框架传 0~1，CLI 收 0~100（也兼容直接传 0~100 的调用）
+			const raw = Number(data?.volume) || 0;
+			const percent = raw <= 1 ? raw * 100 : raw;
 			await qmtuiPost("/api/action", {
 				action: "volume",
-				volume: Math.max(0, Math.min(100, Number(data?.volume) || 0)),
+				volume: Math.max(0, Math.min(100, Math.round(percent))),
 			});
 			break;
+		}
 		case "setVolumeRelative": {
 			const base = qmtuiPrev.volume < 0 ? 50 : qmtuiPrev.volume;
 			await qmtuiPost("/api/action", {
