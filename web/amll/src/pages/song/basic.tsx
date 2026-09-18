@@ -1,13 +1,21 @@
 import { toDuration } from "@applemusic-like-lyrics/react-full";
 import { CopyIcon } from "@radix-ui/react-icons";
-import { Code, DataList, Flex, IconButton } from "@radix-ui/themes";
+import { Code, DataList, Flex, IconButton, Select } from "@radix-ui/themes";
+import { useAtomValue } from "jotai";
 import { type FC, useContext } from "react";
 import { Trans, useTranslation } from "react-i18next";
+// qmtui 修改：播放音质选择（帧里带当前档位与可用档位）
+import {
+	QMTUI_QUALITY_LABELS,
+	qmtuiQualityAtom,
+	qmtuiSetQuality,
+} from "../../utils/player.ts";
 import { SongContext } from "./song-ctx.ts";
 
 export const BasicTabContent: FC = () => {
 	const song = useContext(SongContext);
 	useTranslation();
+	const quality = useAtomValue(qmtuiQualityAtom);
 	return (
 		<DataList.Root>
 			<DataList.Item>
@@ -42,6 +50,40 @@ export const BasicTabContent: FC = () => {
 					<Trans i18nKey="page.song.basic.musicDuration">音乐时长</Trans>
 				</DataList.Label>
 				<DataList.Value>{toDuration(song?.duration || 0)}</DataList.Value>
+			</DataList.Item>
+			{/* qmtui 修改：播放音质（CLI 支持多档，网页端原本没有入口） */}
+			<DataList.Item>
+				<DataList.Label>播放音质</DataList.Label>
+				<DataList.Value>
+					<Flex align="center" gap="2">
+						<Select.Root
+							value={String(quality.tier)}
+							onValueChange={(value) => {
+								void qmtuiSetQuality(Number(value));
+							}}
+						>
+							<Select.Trigger />
+							<Select.Content>
+								{QMTUI_QUALITY_LABELS.map((option) => {
+									const usable =
+										quality.available.length === 0 ||
+										quality.available.includes(option.tier);
+									return (
+										<Select.Item
+											key={option.tier}
+											value={String(option.tier)}
+											disabled={!usable}
+										>
+											{option.label}
+											{usable ? "" : "（当前账号不可用）"}
+										</Select.Item>
+									);
+								})}
+							</Select.Content>
+						</Select.Root>
+						<Code variant="ghost">{quality.badge || "—"}</Code>
+					</Flex>
+				</DataList.Value>
 			</DataList.Item>
 		</DataList.Root>
 	);

@@ -33,6 +33,7 @@ import {
 	initAudioThread,
 	listenQmtuiFrames,
 	qmtuiLyricTimeOf,
+	qmtuiQualityAtom,
 	setQmtuiLibraryLookup,
 } from "../../utils/player.ts";
 // qmtui 修改：播放队列（右键「播放」「下一首播放」与播放列表面板都依赖它）
@@ -285,6 +286,16 @@ export const QmtuiMusicContext: FC = () => {
 						store.set(musicLyricLinesAtom, toLyricLines(frame.lyrics) as never);
 					}
 				}
+			}
+			// qmtui 修改：把当前音质与可用档位交给界面
+			if (Number.isFinite(Number(frame.qualityTier))) {
+				store.set(qmtuiQualityAtom, {
+					tier: Number(frame.qualityTier),
+					badge: String(frame.qualityBadge || ""),
+					available: Array.isArray(frame.availableQualityTiers)
+						? (frame.availableQualityTiers as number[]).map((tier) => Number(tier))
+						: [],
+				});
 			}
 			if (Number.isFinite(Number(frame.volume))) {
 				// 框架的音量控件是 0~1，CLI 给的是 0~100

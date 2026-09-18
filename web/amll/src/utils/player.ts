@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { type EventCallback, listen } from "@tauri-apps/api/event";
 import chalk from "chalk";
+import { atom } from "jotai";
 import { uid } from "uid";
 
 export interface AudioThreadEventMessage<T> {
@@ -410,4 +411,33 @@ async function qmtuiSendMessage(type: string, data?: Record<string, unknown>): P
 		default:
 			break;
 	}
+}
+
+/** qmtui 修改：当前播放音质（来自状态帧），供界面展示与切换。 */
+export const qmtuiQualityAtom = atom<{
+	tier: number;
+	badge: string;
+	available: number[];
+}>({ tier: 3, badge: "标准", available: [] });
+
+/** 音质档位与 CLI 的徽标一致（AudioQualityHelper.GetBadge）。 */
+export const QMTUI_QUALITY_LABELS: Array<{ tier: number; label: string }> = [
+	{ tier: 0, label: "Hi-Res" },
+	{ tier: 1, label: "SQ" },
+	{ tier: 2, label: "HQ" },
+	{ tier: 3, label: "标准" },
+	{ tier: 4, label: "母带" },
+	{ tier: 5, label: "臻品" },
+	{ tier: 6, label: "5.1" },
+	{ tier: 7, label: "7.1" },
+	{ tier: 8, label: "杜比" },
+];
+
+/** 请求切换音质档位。 */
+export async function qmtuiSetQuality(tier: number): Promise<void> {
+	await fetch("/api/quality", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ tier }),
+	}).catch(() => undefined);
 }
