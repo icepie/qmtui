@@ -174,6 +174,34 @@ public sealed partial class MusicApi
     }
 
     /// <summary>
+    /// 向 Web 网关（musicu.fcg）发送明文 JSON + zzc 签名请求，返回响应 JSON。
+    /// 带 Cookie（登录态）时该网关可直接读写“收藏的歌单”等资源；注意上层的
+    /// “收藏/取消收藏歌单”接口只存在于 musicu.fcg，Android 网关（musics.fcg）
+    /// 会把它当成未知请求（code 2000）。
+    /// </summary>
+    public static async Task<string> PostWebGatewayAsync(string jsonPayload, CancellationToken ct = default)
+    {
+        var sign = ComputeZzcSign(jsonPayload);
+        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var url = $"https://u6.y.qq.com/cgi-bin/musicu.fcg?_={ts}&sign={sign}";
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, url);
+        req.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+        req.Headers.TryAddWithoutValidation("User-Agent", "QQMusic 14090008(android 15)");
+        req.Headers.TryAddWithoutValidation("Origin", "https://y.qq.com");
+        req.Headers.Referrer = new Uri("https://y.qq.com/");
+
+        var cookieHeader = UserSession.Current.GetCookieHeader();
+        if (!string.IsNullOrEmpty(cookieHeader))
+        {
+            req.Headers.Add("Cookie", cookieHeader);
+        }
+
+        using var resp = await s_httpClient.SendAsync(req, ct).ConfigureAwait(false);
+        return await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// 向 Android App 网关（musics.fcg）发送明文 JSON + zzc 签名请求，返回响应 JSON。
     /// 微信登录态下“我喜欢”（dirId=201）的写操作必须走此协议（AG-1 会返回 80105）。
     /// </summary>
@@ -188,12 +216,9 @@ public sealed partial class MusicApi
         req.Headers.TryAddWithoutValidation("User-Agent", "QQMusic 14090008(android 15)");
         req.Headers.TryAddWithoutValidation("Origin", "https://y.qq.com");
         req.Headers.Referrer = new Uri("https://y.qq.com/");
-
-        var cookieHeader = UserSession.Current.GetCookieHeader();
-        if (!string.IsNullOrEmpty(cookieHeader))
-        {
-            req.Headers.Add("Cookie", cookieHeader);
-        }
+        // 不要加 Cookie：实测带上登录 Cookie 后服务端仍回 code=0，但 data.result 是
+        // dirId=0/tid=0/updateTime=0 的空壳，写入被静默丢弃（微信登录态下必现）。
+        // 身份完全由 comm.authst=music_key + comm.qq=uin + zzc 签名承载。
 
         using var resp = await s_httpClient.SendAsync(req, ct).ConfigureAwait(false);
         return await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);

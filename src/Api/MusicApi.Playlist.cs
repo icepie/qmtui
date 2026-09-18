@@ -741,12 +741,14 @@ public sealed partial class MusicApi
 
         await LoginService.EnsureMusicKeyAsync(ct).ConfigureAwait(false);
         var uin = UserSession.Current.Uin;
-        var key = favorite ? "addFavPlayList" : "deleteFavPlayList";
         var method = favorite ? "FavPlaylist" : "CancelFavPlaylist";
+        // 请求键必须是 updatePlayListFavStatus（与前端 updatePlayListFavStatus 一致）：
+        // 用它返回 {code:0, data:{result:0, v_failedPlaylistId:[]}}，换成
+        // addFavPlayList/deleteFavPlayList 当键会被网关判为未知请求（code 2000）。
         var payload = $$"""
         {
-          "comm": { "ct": 19, "cv": 1, "tmeAppID": "qqmusic" },
-          "{{key}}": {
+          "comm": { "uin": "{{uin}}" },
+          "updatePlayListFavStatus": {
             "module": "music.musicasset.PlaylistFavWrite",
             "method": "{{method}}",
             "param": { "uin": "{{uin}}", "v_playlistId": [{{tid}}] }
@@ -757,11 +759,11 @@ public sealed partial class MusicApi
         try
         {
             AppLogger.Info("MusicApi", $"SetPlaylistFavoriteAsync requesting: tid={tid}, favorite={favorite}");
-            var json = await PostAndroidAsync(payload, ct).ConfigureAwait(false);
+            var json = await PostWebGatewayAsync(payload, ct).ConfigureAwait(false);
             AppLogger.Info("MusicApi", $"SetPlaylistFavoriteAsync response: {json}");
 
             using var doc = JsonDocument.Parse(json);
-            if (!doc.RootElement.TryGetProperty(key, out var response) ||
+            if (!doc.RootElement.TryGetProperty("updatePlayListFavStatus", out var response) ||
                 !response.TryGetProperty("code", out var codeProp) ||
                 codeProp.ValueKind != JsonValueKind.Number || codeProp.GetInt32() != 0 ||
                 !response.TryGetProperty("data", out var data))
