@@ -322,6 +322,12 @@ function initQmtuiBridge() {
 	connect();
 }
 
+let qmtuiLibraryLookup: ((id: string) => Record<string, unknown> | undefined) | null = null;
+export function setQmtuiLibraryLookup(lookup: (id: string) => Record<string, unknown> | undefined) {
+	qmtuiLibraryLookup = lookup;
+}
+const qmtuiLookupLibrarySong = (id: string) => qmtuiLibraryLookup?.(id);
+
 async function qmtuiSendMessage(type: string, data?: Record<string, unknown>): Promise<void> {
 	const rawSong = data?.song as Record<string, unknown> | undefined;
 	const songKey = rawSong ? String(rawSong.songId || rawSong.filePath || "") : "";
@@ -339,6 +345,9 @@ async function qmtuiSendMessage(type: string, data?: Record<string, unknown>): P
 			await qmtuiPost(`/api/seek?pos=${Math.max(0, Number(data?.position) || 0).toFixed(2)}`);
 			break;
 		case "playAudio": {
+			// 库内选中的歌（来自歌单/搜索）也要能解析
+			const fromLibrary = qmtuiLookupLibrarySong(songKey);
+			if (fromLibrary) qmtuiSongs.set(songKey, fromLibrary);
 			const cached = qmtuiSongs.get(songKey);
 			if (cached) {
 				await qmtuiPost("/api/library/play", { song: cached, context: [...qmtuiSongs.values()] });

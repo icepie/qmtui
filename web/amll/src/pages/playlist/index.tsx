@@ -628,12 +628,7 @@ export const Component: FC = () => {
 												随机播放
 											</Trans>
 										</Button>
-										<Button variant="soft" onClick={onAddLocalMusics}>
-											<PlusIcon />
-											<Trans i18nKey="page.playlist.addLocalMusic.label">
-												添加本地歌曲
-											</Trans>
-										</Button>{" "}
+										{/* qmtui 修改：本地文件在网页模式下不可用，移除「添加本地歌曲」 */}
 										{isFolderPlaylist && (
 											<Button variant="soft" onClick={onRefreshPlaylist}>
 												<ReloadIcon />

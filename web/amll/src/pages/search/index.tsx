@@ -21,6 +21,8 @@ import { PlaylistCard } from "../../components/PlaylistCard/index.tsx";
 import { SongCard } from "../../components/SongCard/index.tsx";
 import { db } from "../../utils/db-client.ts";
 import { useDbQuery } from "../../utils/use-db-query.ts";
+// qmtui 修改：搜索改为云端（QQ 曲库）优先
+import { searchQmtuiCloud } from "../../utils/qmtui-library.ts";
 import styles from "./index.module.css";
 
 const FilterButton: FC<
@@ -54,11 +56,14 @@ export const Component: FC = () => {
 	const { data: songsData, loading: songsLoading } = useDbQuery(
 		async () => {
 			if (filters.length === 0) return [];
+			// qmtui 修改：先搜云端，本地库作为补充
+			const cloud = await searchQmtuiCloud(trimmedKeyword);
 			const allPlaylists = await db.playlists.getAll();
 			const allSongIds = [...new Set(allPlaylists.flatMap((p) => p.songIds))];
 			if (allSongIds.length === 0) return [];
 			const allSongs = await db.songs.getByIds(allSongIds);
-			return allSongs
+			const cloudIds = new Set(cloud.songs.map((song) => song.id));
+			return [...cloud.songs, ...allSongs.filter((song) => !cloudIds.has(song.id))]
 				.filter((song) => {
 					for (const filter of filters) {
 						switch (filter.filterType) {
@@ -90,8 +95,11 @@ export const Component: FC = () => {
 	const { data: playlistsData, loading: playlistsLoading } = useDbQuery(
 		async () => {
 			if (filters.length === 0) return [];
+			// qmtui 修改：歌单同样云端优先
+			const cloud = await searchQmtuiCloud(trimmedKeyword);
 			const allPlaylists = await db.playlists.getAll();
-			return allPlaylists
+			const cloudIds = new Set(cloud.playlists.map((playlist) => playlist.id));
+			return [...cloud.playlists, ...allPlaylists.filter((playlist) => !cloudIds.has(playlist.id))]
 				.filter((playlist) => {
 					for (const filter of filters) {
 						switch (filter.filterType) {

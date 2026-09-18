@@ -357,9 +357,12 @@ public sealed partial class WebPlaybackServer : IDisposable
                 else if (path.StartsWith("/amll/", StringComparison.Ordinal))
                 {
                     byte[] content = StaticResourceHelper.LoadStaticBytes(path.TrimStart('/'));
-                    if (content.Length == 0 && !Path.HasExtension(path))
+                    bool fallback = content.Length == 0 && !Path.HasExtension(path);
+                    if (fallback)
                     {
-                        // SPA 深链（如 /amll/settings）回退到入口页
+                        // SPA 深链（如 /amll/settings、/amll/playlist/123）回退到入口页。
+                        // 回退时必须显式用 text/html：按路径推断类型会得到 octet-stream，
+                        // 浏览器会直接把它当成下载。
                         content = StaticResourceHelper.LoadStaticBytes("amll/index.html");
                     }
                     if (content.Length == 0)
@@ -368,7 +371,8 @@ public sealed partial class WebPlaybackServer : IDisposable
                     }
                     else
                     {
-                        await SendBinaryResponseAsync(stream, 200, "OK", GetStaticContentType(path), content, ct).ConfigureAwait(false);
+                        string contentType = fallback ? "text/html; charset=utf-8" : GetStaticContentType(path);
+                        await SendBinaryResponseAsync(stream, 200, "OK", contentType, content, ct).ConfigureAwait(false);
                     }
                 }
                 else if (path.StartsWith("/assets/", StringComparison.Ordinal) ||

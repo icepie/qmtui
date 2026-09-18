@@ -15,7 +15,10 @@ import {
 	musicPlayingAtom,
 	musicPlayingPositionAtom,
 	musicVolumeAtom,
+	hideLyricViewAtom,
+	isLyricPageOpenedAtom,
 	onChangeVolumeAtom,
+	onClickControlThumbAtom,
 	onCycleRepeatModeAtom,
 	onLyricLineClickAtom,
 	onPlayOrResumeAtom,
@@ -26,7 +29,8 @@ import {
 } from "@applemusic-like-lyrics/react-full";
 import { useStore } from "jotai";
 import { type FC, useEffect, useRef } from "react";
-import { initAudioThread, listenQmtuiFrames } from "../../utils/player.ts";
+import { initAudioThread, listenQmtuiFrames, setQmtuiLibraryLookup } from "../../utils/player.ts";
+import { rawQmtuiSong } from "../../utils/qmtui-library.ts";
 
 const post = (path: string, body?: unknown) =>
 	fetch(path, {
@@ -71,9 +75,13 @@ let lastMode = "list_loop";
 export const QmtuiMusicContext: FC = () => {
 	const store = useStore();
 	const anchorRef = useRef<{ position: number; timestamp: number } | null>(null);
+	const playingRef = useRef(false);
+	const lastFramePosRef = useRef(-1);
+	const lyricSignatureRef = useRef("");
 
 	useEffect(() => {
 		initAudioThread();
+		setQmtuiLibraryLookup((id) => rawQmtuiSong(id));
 		const toEmit = <T,>(onEmit: T) => ({ onEmit });
 
 		store.set(
@@ -120,6 +128,15 @@ export const QmtuiMusicContext: FC = () => {
 				void post("/api/action", { action: "set_mode", mode: lastMode });
 			}),
 		);
+		// 专辑图上方那条控制横条：框架文档说明「通常用于关闭歌词页面」，
+		// 官方音源都留空，所以点了没反应；这里按本意接上。
+		store.set(
+			onClickControlThumbAtom,
+			toEmit(() => {
+				store.set(isLyricPageOpenedAtom, false);
+				store.set(hideLyricViewAtom, false);
+			}),
+		);
 		store.set(
 			onLyricLineClickAtom,
 			toEmit((line: { startTime?: number } | number) => {
@@ -127,6 +144,16 @@ export const QmtuiMusicContext: FC = () => {
 				void post(`/api/seek?pos=${(Math.max(0, ms) / 1000).toFixed(2)}`);
 			}),
 		);
+
+		// 专辑图上方那条控制横条：框架文档说明「通常用于关闭歌词页面」，但它的
+		// onClickControlThumb 回调在浏览器里不触发，这里直接监听点击。
+		const onDocumentClick = (event: MouseEvent) => {
+			const target = event.target instanceof Element ? event.target : null;
+			if (!target?.closest('[class*="controlThumb"]')) return;
+			store.set(isLyricPageOpenedAtom, false);
+			store.set(hideLyricViewAtom, false);
+		};
+		document.addEventListener("click", onDocumentClick, true);
 
 		const unlisten = listenQmtuiFrames((frame) => {
 			const song = (frame.song ?? null) as Record<string, unknown> | null;
@@ -146,10 +173,14 @@ export const QmtuiMusicContext: FC = () => {
 				);
 				store.set(musicCoverAtom, coverOf(song));
 				if (Array.isArray(frame.lyrics)) {
-					store.set(
-						musicLyricLinesAtom,
-						toLyricLines(frame.lyrics) as never,
-					);
+					// 只在歌词内容真正变化时写入：每帧写入新数组会让 AMLL 重建整屏歌词（整屏乱跳）
+					const lines = frame.lyrics as Array<Record<string, unknown>>;
+					const last = lines[lines.length - 1];
+					const signature = `${lines.length}:${String(lines[0]?.timeMs ?? "")}:${String(last?.timeMs ?? "")}:${String(lines[0]?.text ?? "").slice(0, 8)}`;
+					if (signature !== lyricSignatureRef.current) {
+						lyricSignatureRef.current = signature;
+						store.set(musicLyricLinesAtom, toLyricLines(frame.lyrics) as never);
+					}
 				}
 			}
 			if (Number(frame.duration) > 0) {
@@ -158,11 +189,23 @@ export const QmtuiMusicContext: FC = () => {
 			if (typeof frame.isPlaying === "boolean") {
 				store.set(musicPlayingAtom, Boolean(frame.isPlaying));
 			}
-			anchorRef.current = {
-				position: ((Number(frame.position) || 0) * 1000) | 0,
-				timestamp: performance.now(),
-			};
-			store.set(musicPlayingPositionAtom, anchorRef.current.position);
+			// 只有本组件推进时间轴：状态帧只作为锚点。
+			// CLI 侧的 position 是粗粒度的，如果每帧都覆盖，歌词会整体来回跳；
+			// 因此仅当偏差超过阈值（真 seek / 换曲 / 长暂停）时才重新对齐。
+			const frameMs = ((Number(frame.position) || 0) * 1000) | 0;
+			// 后端状态帧较稀疏：只有“明确暂停且没有推进”才停表，其余一律按播放中计时
+			const advancing = frameMs > lastFramePosRef.current;
+			lastFramePosRef.current = frameMs;
+			playingRef.current = advancing || frame.isPlaying !== false;
+			const anchor = anchorRef.current;
+			const elapsed = anchor ? performance.now() - anchor.timestamp : 0;
+			const expected = anchor ? anchor.position + (playingRef.current ? elapsed : 0) : frameMs;
+			const drift = frameMs - expected;
+			if (!anchor || Math.abs(drift) > 150) {
+				// 偏差超过 150ms 就对齐：后端状态帧约 1s 一帧，阈值过松会让歌词稳定慢半拍
+				anchorRef.current = { position: frameMs, timestamp: performance.now() };
+				store.set(musicPlayingPositionAtom, frameMs);
+			}
 			if (Number.isFinite(Number(frame.mode))) lastMode = String(frame.mode);
 		});
 
@@ -171,9 +214,9 @@ export const QmtuiMusicContext: FC = () => {
 		const tick = () => {
 			const anchor = anchorRef.current;
 			if (anchor) {
-				const playing = store.get(musicPlayingAtom);
-				const elapsed = playing ? performance.now() - anchor.timestamp : 0;
+				const elapsed = playingRef.current ? performance.now() - anchor.timestamp : 0;
 				const duration = store.get(musicDurationAtom);
+				// 平滑完全来自这里的 60fps 推进（不再做单调钳制，否则会锁死时间轴）
 				const next = anchor.position + elapsed;
 				store.set(musicPlayingPositionAtom, duration > 0 ? Math.min(next, duration) : next);
 			}
@@ -183,6 +226,7 @@ export const QmtuiMusicContext: FC = () => {
 
 		return () => {
 			cancelAnimationFrame(rafId);
+			document.removeEventListener("click", onDocumentClick, true);
 			unlisten();
 		};
 	}, [store]);
