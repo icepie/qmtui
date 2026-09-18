@@ -960,6 +960,40 @@ import { state } from './bridge/state.js';
     });
   }
 
+  // 桌面端 QQ 音乐（以及我们绑定的行）靠双击播放，触屏上双击很别扭。
+  // 触屏上把单击合成为一次 dblclick：我们绑的 ondblclick 与原生 SongList 的
+  // onDoubleClick 都会收到，于是单击即播放。行内控件（播放钮/歌手/收藏/更多）自己
+  // 有点击语义，不参与合成。
+  function enableTapToPlay() {
+    if (!window.matchMedia) return;
+    const touchLike =
+      window.matchMedia('(pointer: coarse)').matches ||
+      window.matchMedia('(hover: none)').matches ||
+      'ontouchstart' in window;
+    if (!touchLike) return;
+    const INNER_CONTROL =
+      'a, button, input, select, textarea, [class*="menu"], [class*="oper"], [class*="icon"], [class*="btn"]';
+    let lastRow = null;
+    let lastAt = 0;
+    document.addEventListener(
+      'click',
+      (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        const row = target?.closest('.songlist__item');
+        if (!row || target.closest(INNER_CONTROL)) return;
+        const now = Date.now();
+        // 触屏双击时浏览器还会补一次原生 dblclick，去重避免同一行重复起播
+        if (row === lastRow && now - lastAt < 700) return;
+        lastRow = row;
+        lastAt = now;
+        row.dispatchEvent(
+          new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window, detail: 2 })
+        );
+      },
+      true
+    );
+  }
+
   async function playSong(song, songs) {
     try {
       await post('/api/library/play', {
@@ -2491,6 +2525,7 @@ import { state } from './bridge/state.js';
       return;
     }
     bindOriginalUi();
+    enableTapToPlay();
     watchSkin();
     setupCoverLyricToggle();
     setupMobileSidebar();
