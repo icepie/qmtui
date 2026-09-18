@@ -8,7 +8,6 @@ export function createRouteController({
   getRuntime,
   recoverPlaylistRoute,
   renderAlbumRoute,
-  renderLikePage,
   renderMusicHallPage,
   renderPlaylistRoute,
   renderProfilePage,
@@ -18,10 +17,23 @@ export function createRouteController({
   renderSongCommentRoute,
   resolveSong,
 }) {
+  // 已交还给原生页面的路由：原生页自带主播电台 tab、行内 播放/添加到 按钮与虚拟滚动，
+  // 数据经 ufetch 透传拿真实内容（见 WebPlaybackServer 的 /api/browser/ufetch）。
+  const NATIVE_ROUTES = new Set(['/like']);
+
   return function handleRoute() {
     const runtime = getRuntime();
     if (!runtime) return;
     const { pathname, search } = runtime.history.location;
+
+    // 逃生舱：地址带 ?raw=1 时不渲染自建页面，并把原生容器放出来，
+    // 用于对照原生页面（ufetch 透传之后原生页面能拿到真实数据）。
+    // 原生接管的页面同理：撤掉我们的容器与布局类，让原生页面自己渲染。
+    if (NATIVE_ROUTES.has(pathname) || new URLSearchParams(search).has('raw')) {
+      document.querySelector('.route_cont')?.classList.remove('qmtui-route-active');
+      document.getElementById('qmtui-route-host')?.remove();
+      return;
+    }
 
     if (pathname === '/recommend') {
       setTimeout(renderRecommendPage, 40);
@@ -29,10 +41,6 @@ export function createRouteController({
     }
     if (pathname === '/musicroom') {
       setTimeout(renderMusicHallPage, 40);
-      return;
-    }
-    if (pathname === '/like') {
-      setTimeout(renderLikePage, 40);
       return;
     }
     if (pathname.startsWith('/search')) {

@@ -183,12 +183,13 @@ async function run() {
 
     await page.locator('a.nav_item[href="#/like"]').click();
     await page.waitForURL(/#\/like$/);
+    // /like 已交还原生页面（自带主播电台 tab、行内操作与虚拟滚动），断言原生页本身。
     const routeHost = page.locator('#qmtui-route-host');
-    await routeHost.locator('.qmtui-page__head h1', { hasText: '我喜欢' }).waitFor({
-      state: 'visible',
-      timeout: 15_000,
-    });
-    assert.match(await routeHost.innerText(), /我喜欢/);
+    const likeNav = page.locator('.route_cont');
+    await likeNav.locator('.songlist__item').first().waitFor({ state: 'visible', timeout: 20_000 });
+    const likeText = await likeNav.innerText();
+    assert.match(likeText, /我喜欢/);
+    assert.match(likeText, /主播电台/);
 
     await page.locator('#js_search').fill('周杰伦');
     await page.locator('#js_search').press('Enter');
