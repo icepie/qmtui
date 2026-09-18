@@ -175,10 +175,11 @@ export const Component: FC = () => {
 						<Trans i18nKey="page.main.loadingPlaylist">加载歌单中</Trans>
 					</Flex>
 				)}
-				{/* qmtui 修改：每日推荐 / 猜你喜欢 */}
-				<QmtuiRecommendations />
 				<ExtensionInjectPoint injectPointName="page.main.bottom" />
 			</Flex>
+			{/* qmtui 修改：每日推荐 / 猜你喜欢（放在高度 100% 的网格容器之外，
+			    否则会把它挤成 0 高，歌单网格就不显示了） */}
+			<QmtuiRecommendations />
 		</PageContainer>
 	);
 };
