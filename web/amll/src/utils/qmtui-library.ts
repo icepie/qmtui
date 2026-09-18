@@ -355,3 +355,58 @@ export async function qmtuiSetPlaylistFavorite(tid: number, favorite: boolean): 
 		return false;
 	}
 }
+
+export interface QmtuiSingerHit {
+	mid: string;
+	name: string;
+	picUrl: string;
+}
+
+export interface QmtuiAlbumHit {
+	mid: string;
+	title: string;
+	artist: string;
+	coverUrl: string;
+	songCount: number;
+}
+
+/** 云端搜索歌手与专辑（用于搜索页的歌手/专辑结果）。 */
+export async function searchQmtuiSingersAndAlbums(keyword: string): Promise<{
+	singers: QmtuiSingerHit[];
+	albums: QmtuiAlbumHit[];
+}> {
+	const query = keyword.trim();
+	if (!query) return { singers: [], albums: [] };
+	const encoded = encodeURIComponent(query);
+	const singers: QmtuiSingerHit[] = [];
+	const albums: QmtuiAlbumHit[] = [];
+	try {
+		const data = await json(`/api/library/search/singers?query=${encoded}`);
+		for (const item of (data.singers as Array<Record<string, unknown>>) || []) {
+			if (!item.mid) continue;
+			singers.push({
+				mid: String(item.mid),
+				name: String(item.name || item.title || ""),
+				picUrl: String(item.picUrl || ""),
+			});
+		}
+	} catch (error) {
+		console.error("[qmtui] 搜索歌手失败", error);
+	}
+	try {
+		const data = await json(`/api/library/search/albums?query=${encoded}`);
+		for (const item of (data.albums as Array<Record<string, unknown>>) || []) {
+			if (!item.mid) continue;
+			albums.push({
+				mid: String(item.mid),
+				title: String(item.title || item.name || ""),
+				artist: String(item.artist || ""),
+				coverUrl: String(item.coverUrl || ""),
+				songCount: Number(item.songCount) || 0,
+			});
+		}
+	} catch (error) {
+		console.error("[qmtui] 搜索专辑失败", error);
+	}
+	return { singers, albums };
+}

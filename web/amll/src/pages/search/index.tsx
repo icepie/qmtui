@@ -4,6 +4,7 @@ import {
 	MagnifyingGlassIcon,
 } from "@radix-ui/react-icons";
 import {
+	Avatar,
 	Button,
 	Card,
 	Container,
@@ -16,13 +17,14 @@ import {
 import { atom, useAtom } from "jotai";
 import { type ButtonHTMLAttributes, type FC, useCallback, useRef } from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
 import { AppContainer } from "../../components/AppContainer/index.tsx";
 import { PlaylistCard } from "../../components/PlaylistCard/index.tsx";
 import { SongCard } from "../../components/SongCard/index.tsx";
 import { db } from "../../utils/db-client.ts";
 import { useDbQuery } from "../../utils/use-db-query.ts";
 // qmtui 修改：搜索改为云端（QQ 曲库）优先
-import { searchQmtuiCloud } from "../../utils/qmtui-library.ts";
+import { searchQmtuiCloud, searchQmtuiSingersAndAlbums } from "../../utils/qmtui-library.ts";
 import styles from "./index.module.css";
 
 const FilterButton: FC<
@@ -47,17 +49,26 @@ const filtersAtom = atom([] as Filter[]);
 const keywordAtom = atom("");
 
 export const Component: FC = () => {
+	const navigate = useNavigate();
 	const [filters, setFilters] = useAtom(filtersAtom);
 	const [keyword, setKeyword] = useAtom(keywordAtom);
 	const trimmedKeyword = keyword.trim();
 	const { t } = useTranslation();
 	const inputRef = useRef<HTMLInputElement>(null);
+	// qmtui 修改：关键词添加成筛选项后输入框会被清空，云端搜索要从 filters 里取词
+	const searchKeyword = [
+		...new Set(
+			filters
+				.map((filter) => (filter.keyword || "").trim())
+				.filter((word) => word.length > 0),
+		),
+	].join(" ");
 
 	const { data: songsData, loading: songsLoading } = useDbQuery(
 		async () => {
 			if (filters.length === 0) return [];
 			// qmtui 修改：先搜云端，本地库作为补充
-			const cloud = await searchQmtuiCloud(trimmedKeyword);
+			const cloud = await searchQmtuiCloud(searchKeyword);
 			const allPlaylists = await db.playlists.getAll();
 			const allSongIds = [...new Set(allPlaylists.flatMap((p) => p.songIds))];
 			if (allSongIds.length === 0) return [];
@@ -87,7 +98,7 @@ export const Component: FC = () => {
 				})
 				.slice(0, 20);
 		},
-		[filters],
+		[filters, searchKeyword],
 		[],
 		["songs", "playlists", "playlist_songs"],
 	);
@@ -96,7 +107,7 @@ export const Component: FC = () => {
 		async () => {
 			if (filters.length === 0) return [];
 			// qmtui 修改：歌单同样云端优先
-			const cloud = await searchQmtuiCloud(trimmedKeyword);
+			const cloud = await searchQmtuiCloud(searchKeyword);
 			const allPlaylists = await db.playlists.getAll();
 			const cloudIds = new Set(cloud.playlists.map((playlist) => playlist.id));
 			return [...cloud.playlists, ...allPlaylists.filter((playlist) => !cloudIds.has(playlist.id))]
@@ -117,6 +128,17 @@ export const Component: FC = () => {
 		[filters],
 		[],
 		["playlists", "playlist_songs"],
+	);
+
+	// qmtui 修改：歌手 / 专辑结果
+	const { data: extraData } = useDbQuery(
+		async () => {
+			if (filters.length === 0) return { singers: [], albums: [] };
+			return await searchQmtuiSingersAndAlbums(searchKeyword);
+		},
+		[filters, searchKeyword],
+		{ singers: [], albums: [] },
+		["songs", "playlists"],
 	);
 
 	const addFilter = useCallback(
@@ -344,6 +366,66 @@ export const Component: FC = () => {
 										key={`search-result-playlist-${playlist.id}`}
 									></PlaylistCard>
 								))}
+							</>
+						)}
+
+						{/* qmtui 修改：歌手 / 专辑结果（点进歌手页与专辑页） */}
+						{extraData.singers.length > 0 && (
+							<>
+								<Text as="div" mt="4">
+									搜索到 {extraData.singers.length} 位歌手
+								</Text>
+								<Flex gap="3" wrap="wrap" mt="2">
+									{extraData.singers.slice(0, 12).map((singer) => (
+										<Card
+											key={`search-result-singer-${singer.mid}`}
+											style={{ cursor: "pointer", width: "120px" }}
+											onClick={() => navigate(`/singer/${singer.mid}`)}
+										>
+											<Flex direction="column" align="center" gap="2">
+												<Avatar size="6" src={singer.picUrl} fallback={singer.name.slice(0, 1)} />
+												<Text size="2" align="center">
+													{singer.name}
+												</Text>
+											</Flex>
+										</Card>
+									))}
+								</Flex>
+							</>
+						)}
+
+						{extraData.albums.length > 0 && (
+							<>
+								<Text as="div" mt="4">
+									搜索到 {extraData.albums.length} 张专辑
+								</Text>
+								<Flex gap="3" wrap="wrap" mt="2">
+									{extraData.albums.slice(0, 12).map((album) => (
+										<Card
+											key={`search-result-album-${album.mid}`}
+											style={{ cursor: "pointer", width: "120px" }}
+											onClick={() => navigate(`/album/${album.mid}`)}
+										>
+											<Flex direction="column" align="center" gap="2">
+												<Avatar
+													size="6"
+													variant="soft"
+													src={
+														album.coverUrl ||
+														`https://y.qq.com/music/photo_new/T002R300x300M000${album.mid}.jpg`
+													}
+													fallback="♪"
+												/>
+												<Text size="2" align="center">
+													{album.title}
+												</Text>
+												<Text size="1" color="gray" align="center">
+													{album.artist}
+												</Text>
+											</Flex>
+										</Card>
+									))}
+								</Flex>
 							</>
 						)}
 					</>
