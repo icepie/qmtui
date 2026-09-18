@@ -44,6 +44,7 @@ export function attachPlayer(logicalPlayer, { applyState, showToast, toggleFavor
         ? logicalPlayer.setMute.bind(logicalPlayer)
         : null,
     playAll: logicalPlayer.playAll.bind(logicalPlayer),
+    play: typeof logicalPlayer.play === 'function' ? logicalPlayer.play.bind(logicalPlayer) : null,
     generateVKey:
       typeof logicalPlayer.generateVKey === 'function'
         ? logicalPlayer.generateVKey.bind(logicalPlayer)
@@ -149,6 +150,34 @@ export function attachPlayer(logicalPlayer, { applyState, showToast, toggleFavor
       }).catch((error) => showToast(error.message, true));
     }
   };
+
+  // 播放队列抽屉（原生 play_list 组件）走的是 play({ song }) 而不是 playAll：原生实现会
+  // 自己去解析 QQ 播放地址、在浏览器里直接放，CLI 完全不知情——表现就是队列里点了没反应。
+  // 与 playAll 一样改派给 /api/library/play，播放与界面状态才会一致。
+  if (original.play) {
+    logicalPlayer.play = (params, ...rest) => {
+      const picked =
+        params?.song ||
+        params?.track ||
+        params?.songList?.[params?.index ?? params?.playIndex ?? 0];
+      if (state.applying || !picked || picked.qmtuiRemote === false) {
+        return original.play(params, ...rest);
+      }
+      const song = mapSong(picked);
+      if (!song.mid) return original.play(params, ...rest);
+      // 队列抽屉点的就是 CLI 的队列本身：上下文优先取 CLI 的队列，顺序与定位才不会错位
+      //（原生播放器内部的 playList 顺序可能与队列不同）。
+      const remoteQueue = Array.isArray(state.remote?.songList) ? state.remote.songList : [];
+      const localQueue =
+        (logicalPlayer.playList?.length ? logicalPlayer.playList : logicalPlayer.songList) || [];
+      const source = remoteQueue.length ? remoteQueue : localQueue;
+      const context = source.map(mapSong).filter((value) => value.mid);
+      post('/api/library/play', {
+        song,
+        context: context.length ? context : [song],
+      }).catch((error) => showToast(error.message, true));
+    };
+  }
 
   // The recovered bundle reads window.__QQMUSIC_PLAYER_INSTANCE__ for lyric seek
   // (handleLyricClick) and quality probing. It is normally set only inside the

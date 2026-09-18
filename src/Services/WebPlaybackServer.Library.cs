@@ -17,6 +17,7 @@ internal sealed record WebAlbumMutationRequest(string AlbumMid);
 internal sealed record WebPlaylistFavoriteRequest(long Tid, bool Favorite);
 internal sealed record WebPlaylistFavoriteResponse(bool IsFavorite);
 internal sealed record WebSingerFavoriteRequest(string Mid, bool Favorite);
+internal sealed record WebSongFavoriteRequest(Song Song, bool Favorite);
 internal sealed record WebSingerFavoriteResponse(bool IsFavorite);
 
 public sealed partial class WebPlaybackServer
@@ -244,6 +245,35 @@ public sealed partial class WebPlaybackServer
 
         bool isFavorite = UserSession.Current.FavoriteSingers.Contains(mid);
         await SendLibraryJsonAsync(stream, new WebSingerFavoriteResponse(isFavorite), WebLibraryJsonContext.Default.WebSingerFavoriteResponse, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 按歌曲收藏/取消收藏（我喜欢）。队列抽屉等原生入口的「是否喜欢」原本直接调客户端自己的
+    /// CGI，微信登录态下会静默失效（心不亮、我喜欢也没变），这里统一改走服务端同一条链路。
+    /// </summary>
+    private static async Task HandleSongFavoriteMutationAsync(NetworkStream stream, string body, CancellationToken ct)
+    {
+        if (!await RequireLoginAsync(stream, ct).ConfigureAwait(false)) return;
+        WebSongFavoriteRequest? request;
+        try { request = JsonSerializer.Deserialize(body, WebLibraryJsonContext.Default.WebSongFavoriteRequest); }
+        catch (JsonException) { request = null; }
+        if (request?.Song is null || (request.Song.Id <= 0 && string.IsNullOrWhiteSpace(request.Song.Mid)))
+        {
+            await SendResponseAsync(stream, 400, "Bad Request", "application/json", "{\"error\":\"song is required\"}", ct).ConfigureAwait(false);
+            return;
+        }
+
+        var song = ResolveLocalSong(request.Song);
+        bool ok = request.Favorite
+            ? await MusicApi.AddSongToFavoriteAsync(song, ct).ConfigureAwait(false)
+            : song.Id > 0 && await MusicApi.RemoveSongFromPlaylistAsync(201, song.Id, ct).ConfigureAwait(false);
+        await SendMutationResultAsync(
+            stream,
+            ok,
+            ok
+                ? (request.Favorite ? "已加入我喜欢" : "已从我喜欢移除")
+                : (request.Favorite ? "收藏失败" : "取消收藏失败"),
+            ct).ConfigureAwait(false);
     }
 
     private static async Task HandleSingerFavoriteMutationAsync(NetworkStream stream, string body, CancellationToken ct)
@@ -703,6 +733,7 @@ internal sealed record WebMutationResponse(bool Ok, string Message, long Id);
 [JsonSerializable(typeof(WebPlaylistFavoriteRequest))]
 [JsonSerializable(typeof(WebPlaylistFavoriteResponse))]
 [JsonSerializable(typeof(WebSingerFavoriteRequest))]
+[JsonSerializable(typeof(WebSongFavoriteRequest))]
 [JsonSerializable(typeof(WebSingerFavoriteResponse))]
 [JsonSerializable(typeof(WebLibrarySongsResponse))]
 [JsonSerializable(typeof(WebFavoriteKeysResponse))]

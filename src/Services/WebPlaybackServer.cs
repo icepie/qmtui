@@ -607,6 +607,10 @@ public sealed partial class WebPlaybackServer : IDisposable
                     {
                         await HandlePlaylistFavoriteMutationAsync(stream, bodyPart, ct).ConfigureAwait(false);
                     }
+                    else if (path == "/api/library/song/favorite")
+                    {
+                        await HandleSongFavoriteMutationAsync(stream, bodyPart, ct).ConfigureAwait(false);
+                    }
                     else if (path == "/api/singer/favorite")
                     {
                         await HandleSingerFavoriteMutationAsync(stream, bodyPart, ct).ConfigureAwait(false);

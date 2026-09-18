@@ -964,6 +964,25 @@ import { state } from './bridge/state.js';
   // 触屏上把单击合成为一次 dblclick：我们绑的 ondblclick 与原生 SongList 的
   // onDoubleClick 都会收到，于是单击即播放。行内控件（播放钮/歌手/收藏/更多）自己
   // 有点击语义，不参与合成。
+  // 由行元素反查它对应的歌曲：播放队列抽屉（ReactVirtualized，靠 top/height 定位下标）与
+  // 我们自己渲染的列表（renderSongList 记了 host + songs）各有一套。
+  function songForRow(row) {
+    if (!row) return null;
+    if (row.classList.contains('playlist_list_item')) {
+      const songs = state.player?.songList || [];
+      const height =
+        Number.parseFloat(row.style.height) || row.getBoundingClientRect().height || 70;
+      const top = Number.parseFloat(row.style.top) || 0;
+      const index = Math.max(0, Math.round(top / height));
+      return songs[index] || null;
+    }
+    const host = state.lastList?.host;
+    const songs = state.lastList?.songs || [];
+    if (!host || !host.contains(row)) return null;
+    const index = [...host.querySelectorAll('.songlist__item')].indexOf(row);
+    return songs[index] || null;
+  }
+
   function enableTapToPlay() {
     if (!window.matchMedia) return;
     const touchLike =
@@ -979,7 +998,9 @@ import { state } from './bridge/state.js';
       'click',
       (event) => {
         const target = event.target instanceof Element ? event.target : null;
-        const row = target?.closest('.songlist__item');
+        // 歌曲行两种渲染器：我们的列表/原生 SongList 用 .songlist__item，播放队列抽屉用
+        // .playlist_list_item（ReactVirtualized）。两者都应当单击即播。
+        const row = target?.closest('.songlist__item, .playlist_list_item');
         if (!row || target.closest(INNER_CONTROL)) return;
         const now = Date.now();
         // 触屏双击时浏览器还会补一次原生 dblclick，去重避免同一行重复起播
@@ -2188,6 +2209,28 @@ import { state } from './bridge/state.js';
           event.stopImmediatePropagation();
           showCreatePlaylistDialog();
           return;
+        }
+        // 歌曲行的「收藏」：队列抽屉/原生列表里的实现直接调客户端自己的 CGI，微信登录态下
+        // 是静默无效的（心不亮、我喜欢也不变）。接管后统一走服务端同一条链路。
+        const loveIcon = event.target.closest('.songlist__icon_love, .playlist__icon_love');
+        if (loveIcon) {
+          const row = loveIcon.closest('.songlist__item, .playlist_list_item');
+          const song = songForRow(row);
+          if (song) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            const favorite = !loveIcon.classList.contains('loved');
+            post('/api/library/song/favorite', { song: mapSong(song), favorite })
+              .then(() => {
+                loveIcon.classList.toggle('loved', favorite);
+                refreshLoveMarks();
+                showToast(
+                  `${favorite ? '已加入我喜欢' : '已从我喜欢移除'}：${song.title || song.name || ''}`
+                );
+              })
+              .catch((error) => showToast(error.message, true));
+            return;
+          }
         }
         // 播放队列抽屉的垃圾桶：原生按钮只改本地 store，服务端队列不会变，这里接管。
         if (event.target.closest('.playlist_cont .delete_icon')) {
