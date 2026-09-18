@@ -276,6 +276,15 @@ public sealed partial class WebPlaybackServer
         await SendResponseAsync(stream, 202, "Accepted", "application/json", "{\"ok\":true}", ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// 清空播放队列里待播的歌曲（保留当前播放曲目）——播放队列抽屉的垃圾桶。
+    /// </summary>
+    private async Task HandleQueueClearAsync(NetworkStream stream, CancellationToken ct)
+    {
+        QueueClearRequested?.Invoke();
+        await SendResponseAsync(stream, 202, "Accepted", "application/json", "{\"ok\":true}", ct).ConfigureAwait(false);
+    }
+
     private async Task HandleLibraryPlayAsync(NetworkStream stream, string body, CancellationToken ct)
     {
         WebLibraryPlayRequest? request;

@@ -156,8 +156,10 @@ public sealed partial class WebPlaybackServer : IDisposable
     public event Action? ToggleQualityRequested;
     public event Action<AudioQualityTier>? QualityRequested;
     public event Action? PlaybackEnded;
-    /// <summary>把歌曲加入播放队列（bool = true 表示插到下一首，false 表示追加到队尾）。</summary>
+    /// <summary>把歌曲加入播放队列(bool = true 表示插到下一首,false 表示追加到队尾)。</summary>
     public event Action<Song, bool>? QueueAddRequested;
+    /// <summary>清空播放队列中待播的歌曲（保留当前播放曲目），对应播放队列抽屉的垃圾桶。</summary>
+    public event Action? QueueClearRequested;
     public event Action<double>? SeekRequested;
     public event Action<int>? VolumeRequested;
     public event Action<double, double>? ProgressReported;
@@ -568,6 +570,10 @@ public sealed partial class WebPlaybackServer : IDisposable
                     else if (path == "/api/queue/add")
                     {
                         await HandleQueueAddAsync(stream, bodyPart, ct).ConfigureAwait(false);
+                    }
+                    else if (path == "/api/queue/clear")
+                    {
+                        await HandleQueueClearAsync(stream, ct).ConfigureAwait(false);
                     }
                     else if (path == "/api/download")
                     {

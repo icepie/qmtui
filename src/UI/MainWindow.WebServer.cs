@@ -146,6 +146,11 @@ public sealed partial class MainWindow
             else PlaybackQueueService.Instance.Append(song);
             server.BroadcastState("queue_change");
         });
+        server.QueueClearRequested += () => Application.Invoke(() =>
+        {
+            PlaybackQueueService.Instance.ClearUpcoming();
+            server.BroadcastState("queue_change");
+        });
         server.ToggleQualityRequested += () => Application.Invoke(async () =>
         {
             await CycleQualityTierAsync(allowHiRes: false);

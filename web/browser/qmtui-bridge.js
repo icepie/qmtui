@@ -2037,6 +2037,15 @@ import { state } from './bridge/state.js';
           showCreatePlaylistDialog();
           return;
         }
+        // 播放队列抽屉的垃圾桶：原生按钮只改本地 store，服务端队列不会变，这里接管。
+        if (event.target.closest('.playlist_cont .delete_icon')) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          post('/api/queue/clear')
+            .then(() => showToast('已清空待播歌曲'))
+            .catch((error) => showToast(error.message, true));
+          return;
+        }
         if (event.target.closest('.player_cont_state_tool_love')) {
           event.preventDefault();
           event.stopImmediatePropagation();
