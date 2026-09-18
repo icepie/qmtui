@@ -185,8 +185,7 @@ export const QmtuiMusicContext: FC = () => {
 
 		const queueManager = new PlayQueueManager(store);
 		store.set(queueManagerAtom, queueManager);
-		// 用 CLI 当前的队列填充管理器，但不触发播放（CLI 才是播放方）。
-		let queueHydrated = false;
+		const queueSignatureRef = { current: "" };
 
 		// qmtui 修改：AMLL 内核默认不响应歌词行点击，打开后才会发出 lyricLineClick
 		// （框架再转成 onLyricLineClick → 我们已经接到 /api/seek）。
@@ -206,28 +205,38 @@ export const QmtuiMusicContext: FC = () => {
 			// qmtui 修改：用 CLI 的队列填充管理器（只填一次），供播放列表面板与
 			// 右键菜单的「播放」「下一首播放」使用；CLI 仍是唯一的播放方，
 			// 所以只写内部列表，不调用会触发播放的 setQueue。
-			if (!queueHydrated) {
-				const list = Array.isArray(frame.songList) ? (frame.songList as Record<string, unknown>[]) : [];
-				if (list.length > 0) {
-					queueHydrated = true;
-					const queueSongs = list.map((item) => ({
+			// qmtui 修改：把 CLI 的队列同步给播放列表面板。CLI 才是播放方，
+			// 所以只写管理器的内部列表并同步原子，不调用会触发播放的 setQueue。
+			const queueList = Array.isArray(frame.songList) ? (frame.songList as Record<string, unknown>[]) : [];
+			const currentId = String((frame.song as Record<string, unknown> | null)?.id ?? "");
+			if (queueList.length > 0) {
+				const first = String(queueList[0]?.id ?? "");
+				const last = String(queueList[queueList.length - 1]?.id ?? "");
+				const signature = `${queueList.length}:${first}:${last}:${currentId}`;
+				if (signature !== queueSignatureRef.current) {
+					queueSignatureRef.current = signature;
+					const queueSongs = queueList.map((item) => ({
 						id: String(item.id ?? item.mid ?? ""),
+						filePath: "",
 						songName: String(item.title ?? ""),
 						songArtists: String(item.artist ?? ""),
 						songAlbum: String(item.album ?? ""),
-						songCover: null,
 						duration: Number(item.duration) || 0,
+						lyricFormat: "",
+						lyric: "",
+						coverPath: null,
 					}));
 					const internal = queueManager as unknown as {
 						originalList: unknown[];
 						playList: unknown[];
 						currentIndex: number;
+						syncToAtoms?: () => void;
 					};
 					internal.originalList = [...queueSongs];
 					internal.playList = [...queueSongs];
-					const currentId = String((frame.song as Record<string, unknown> | null)?.id ?? "");
 					const index = queueSongs.findIndex((item) => item.id === currentId);
 					internal.currentIndex = index >= 0 ? index : 0;
+					internal.syncToAtoms?.();
 				}
 			}
 			const song = (frame.song ?? null) as Record<string, unknown> | null;
