@@ -1077,18 +1077,6 @@ import { state } from './bridge/state.js';
     </div></nav>`;
   }
 
-  async function recoverPlaylistRoute(id) {
-    try {
-      const result = await api('/api/library/playlists');
-      const playlists = (result.playlists || []).map(toNativePlaylist);
-      const playlist = state.playlists.get(String(id));
-      if (playlist) renderPlaylistRoute(playlist);
-      else if (playlists.length) showToast('未找到对应歌单', true);
-    } catch (error) {
-      showToast(error.message, true);
-    }
-  }
-
   async function renderPlaylistRoute(playlist) {
     const token = ++state.routeToken;
     const host = createRouteHost();
@@ -1890,10 +1878,97 @@ import { state } from './bridge/state.js';
     }
   }
 
+  // 官方推荐 feed（music.recommend.RecommendFeed）：客户端只在远程页面里调用它，
+  // 这里经 /api/browser/ufetch 带会话直接取用。返回 [{title, cards:[{id,title,subtitle,cover}]}]。
+  async function fetchRecommendShelves() {
+    const uin = String(state.account?.uin || '');
+    const target = 'https://u.y.qq.com/cgi-bin/musicu.fcg';
+    const result = await post(`/api/browser/ufetch?url=${encodeURIComponent(target)}&method=POST`, {
+      comm: { uin, format: 'json', ct: 19, cv: 1, authst: '' },
+      req_feed: {
+        module: 'music.recommend.RecommendFeed',
+        method: 'get_recommend_feed',
+        param: { uin, direction: 0, page: 1 },
+      },
+    });
+    // 该接口把字符串字段再 JSON 编码了一层（"\"123\""），这里剥掉。
+    const decode = (value) => {
+      if (typeof value !== 'string') return value == null ? '' : String(value);
+      try {
+        const parsed = JSON.parse(value);
+        return typeof parsed === 'string' ? parsed : value;
+      } catch {
+        return value;
+      }
+    };
+    return (result?.req_feed?.data?.v_shelf || [])
+      .map((shelf) => {
+        const niche = (shelf.v_niche || [])[0] || {};
+        const cards = (niche.v_card || [])
+          .map((card) => ({
+            id: decode(card.id),
+            title: decode(card.title),
+            subtitle: decode(card.miscellany?.cnt_content),
+            cover: decode(card.cover),
+          }))
+          .filter((card) => card.id && card.cover);
+        return { title: decode(niche.title_content), cards };
+      })
+      .filter((shelf) => shelf.cards.length > 0);
+  }
+
   async function renderRecommendPage() {
     const token = ++state.routeToken;
-    const page = renderPageShell('推荐', '根据你的音乐偏好生成', ['每日30首', '猜你喜欢']);
+    const page = renderPageShell('推荐', '根据你的音乐偏好生成', [
+      '为你推荐',
+      '每日30首',
+      '猜你喜欢',
+    ]);
     if (!page) return;
+
+    const loadFeed = async () => {
+      clearRenderedContent(page.body);
+      page.body.innerHTML = '<div class="qmtui-loading">正在加载推荐…</div>';
+      try {
+        const shelves = await fetchRecommendShelves();
+        if (token !== state.routeToken) return;
+        if (!shelves.length) {
+          page.body.innerHTML = '<div class="qmtui-empty">暂时没有推荐内容</div>';
+          return;
+        }
+        page.body.innerHTML = '';
+        for (const shelf of shelves) {
+          const section = document.createElement('section');
+          section.className = 'qmtui-recommend-shelf';
+          if (shelf.title) {
+            const heading = document.createElement('h2');
+            heading.className = 'qmtui-recommend-shelf__title c_tx_normal';
+            heading.textContent = shelf.title;
+            section.append(heading);
+          }
+          const grid = document.createElement('div');
+          grid.className = 'qmtui-card-grid';
+          for (const card of shelf.cards) {
+            const node = document.createElement('a');
+            node.className = 'qmtui-card';
+            node.innerHTML = `<div class="qmtui-card__cover"><img src="${escapeHtml(card.cover)}" alt="" loading="lazy"></div>
+              <p class="qmtui-card__title c_tx_normal">${escapeHtml(card.title)}</p>
+              <p class="qmtui-card__subtitle c_tx_thin">${escapeHtml(card.subtitle)}</p>`;
+            node.onclick = (event) => {
+              event.preventDefault();
+              const target = `/playlist_detail/${encodeURIComponent(card.id)}?name=${encodeURIComponent(card.title)}`;
+              getRuntime()?.history.push(target);
+            };
+            grid.append(node);
+          }
+          section.append(grid);
+          page.body.append(section);
+        }
+      } catch (error) {
+        page.body.innerHTML = `<div class="qmtui-empty">${escapeHtml(error.message)}</div>`;
+      }
+    };
+
     const load = async (type) => {
       clearRenderedContent(page.body);
       page.body.innerHTML = '<div class="qmtui-loading">正在加载推荐歌曲…</div>';
@@ -1909,10 +1984,11 @@ import { state } from './bridge/state.js';
     tabs.forEach((tab, index) => {
       tab.onclick = () => {
         for (const item of tabs) item.classList.toggle('active', item === tab);
-        load(index === 0 ? 'daily' : 'guess');
+        if (index === 0) loadFeed();
+        else load(index === 1 ? 'daily' : 'guess');
       };
     });
-    load('daily');
+    loadFeed();
   }
 
   async function renderMusicHallPage() {
@@ -1976,7 +2052,6 @@ import { state } from './bridge/state.js';
   const handleRoute = createRouteController({
     clearRouteHost,
     getRuntime,
-    recoverPlaylistRoute,
     renderAlbumRoute,
     renderMusicHallPage,
     renderPlaylistRoute,
@@ -1985,6 +2060,7 @@ import { state } from './bridge/state.js';
     renderSearchRoute,
     renderSingerRoute,
     renderSongCommentRoute,
+    showToast,
     resolveSong: () => (state.remote?.song ? toQqSong(state.remote.song) : null),
   });
 

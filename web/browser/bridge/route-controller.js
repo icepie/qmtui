@@ -6,7 +6,6 @@ const RECENT_PLAY_DIR_ID = 202;
 export function createRouteController({
   clearRouteHost,
   getRuntime,
-  recoverPlaylistRoute,
   renderAlbumRoute,
   renderMusicHallPage,
   renderPlaylistRoute,
@@ -16,6 +15,7 @@ export function createRouteController({
   renderSingerRoute,
   renderSongCommentRoute,
   resolveSong,
+  showToast,
 }) {
   // 已交还给原生页面的路由：原生页自带主播电台 tab、行内 播放/添加到 按钮与虚拟滚动，
   // 数据经 ufetch 透传拿真实内容（见 WebPlaybackServer 的 /api/browser/ufetch）。
@@ -71,8 +71,26 @@ export function createRouteController({
         return;
       }
       const playlist = state.playlists.get(String(id));
-      if (playlist) setTimeout(() => renderPlaylistRoute(playlist), 40);
-      else setTimeout(() => recoverPlaylistRoute(id), 40);
+      if (playlist) {
+        setTimeout(() => renderPlaylistRoute(playlist), 40);
+      } else if (/^\d+$/.test(id)) {
+        // 推荐页等处的歌单卡片给的是 dissid：按“收藏歌单(tid)”路径读 uniform_get_Dissinfo 即可拿到曲目。
+        const name = new URLSearchParams(search).get('name') || '歌单';
+        setTimeout(
+          () =>
+            renderPlaylistRoute({
+              dirId: 0,
+              tid: Number(id),
+              id: Number(id),
+              name,
+              isFav: true,
+            }),
+          40
+        );
+      } else {
+        // 榜单等非歌单 id（例如 toplist 的 0_9）暂不支持在网页端打开
+        setTimeout(() => showToast('该分区暂不支持在网页端打开', true), 40);
+      }
       return;
     }
     if (pathname.startsWith('/album_detail')) {

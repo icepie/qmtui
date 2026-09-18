@@ -377,6 +377,15 @@ a.nav_item[href*="/webDav"] {
   color: #1ed99a;
   border-color: #1ed99a;
 }
+/* 推荐页（官方 feed）：分区之间的间距与分区标题 */
+.qmtui-recommend-shelf + .qmtui-recommend-shelf {
+  margin-top: 28px;
+}
+.qmtui-recommend-shelf__title {
+  margin: 0 0 14px;
+  font-size: 18px;
+  font-weight: 600;
+}
 .qmtui-card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));

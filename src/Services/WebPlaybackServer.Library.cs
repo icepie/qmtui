@@ -131,10 +131,17 @@ public sealed partial class WebPlaybackServer
     private static async Task HandleLibraryPlaylistAsync(NetworkStream stream, string rawPath, CancellationToken ct)
     {
         if (!await RequireLoginAsync(stream, ct).ConfigureAwait(false)) return;
+        bool isFav = ParseBooleanQueryParameter(rawPath, "isFav");
         if (!long.TryParse(GetQueryParameter(rawPath, "dirId"), out var dirId) || dirId <= 0)
         {
-            await SendResponseAsync(stream, 400, "Bad Request", "application/json", "{\"error\":\"valid dirId is required\"}", ct).ConfigureAwait(false);
-            return;
+            // 收藏歌单（isFav）只按 tid 读 uniform_get_Dissinfo，dirId 允许为 0
+            //（推荐页的卡片就是这种：歌曲不在用户库里，只有 dissid）。
+            if (!isFav)
+            {
+                await SendResponseAsync(stream, 400, "Bad Request", "application/json", "{\"error\":\"valid dirId is required\"}", ct).ConfigureAwait(false);
+                return;
+            }
+            dirId = 0;
         }
 
         var playlist = new Playlist(
@@ -142,7 +149,7 @@ public sealed partial class WebPlaybackServer
             GetQueryParameter(rawPath, "name") ?? "未命名歌单",
             0,
             ParseLongQueryParameter(rawPath, "tid"),
-            ParseBooleanQueryParameter(rawPath, "isFav"));
+            isFav);
         int page = ParsePositiveQueryParameter(rawPath, "page", 1);
         var result = await MusicApi.GetPlaylistSongsAsync(playlist, page, WebLibraryPageSize, ct).ConfigureAwait(false);
         await SendLibraryJsonAsync(stream, new WebLibrarySongsResponse(playlist.Name, page, result.Songs, result.HasMore, result.Total), ct).ConfigureAwait(false);
