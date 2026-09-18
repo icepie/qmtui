@@ -740,6 +740,14 @@ public sealed partial class MusicApi
         if (!UserSession.Current.IsLoggedIn || tid <= 0) return false;
 
         await LoginService.EnsureMusicKeyAsync(ct).ConfigureAwait(false);
+
+        // WEB 网关（u6.y.qq.com）对微信登录账号会拒绝歌单收藏写入，
+        // 与歌曲收藏同一根因，所以先走 Android App 协议（musics.fcg + zzc 签名）。
+        if (await SetPlaylistFavoriteAndroidAsync(tid, favorite, ct).ConfigureAwait(false))
+        {
+            return true;
+        }
+
         var uin = UserSession.Current.Uin;
         var method = favorite ? "FavPlaylist" : "CancelFavPlaylist";
         // 请求键必须是 updatePlayListFavStatus（与前端 updatePlayListFavStatus 一致）：
@@ -790,6 +798,62 @@ public sealed partial class MusicApi
         catch (Exception ex)
         {
             AppLogger.Error("MusicApi", $"SetPlaylistFavoriteAsync exception for tid={tid}, favorite={favorite}", ex);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 通过 Android App 协议（musics.fcg + zzc 签名）收藏/取消收藏歌单。
+    /// </summary>
+    private static async Task<bool> SetPlaylistFavoriteAndroidAsync(long tid, bool favorite, CancellationToken ct)
+    {
+        var uin = UserSession.Current.Uin;
+        var musicKey = UserSession.Current.MusicKey;
+        int tmeLoginType = musicKey.StartsWith("W_X", StringComparison.Ordinal) ? 1 : 2;
+        var method = favorite ? "FavPlaylist" : "CancelFavPlaylist";
+
+        // 手动拼接避免 NativeAOT 下的运行时反射；music_key/uin 均为安全字符集，无需转义。
+        var payload = $"{{\"comm\":{{\"ct\":11,\"cv\":14090008,\"v\":14090008,\"chid\":\"10003505\",\"qq\":\"{uin}\",\"authst\":\"{musicKey}\",\"tmeAppID\":\"qqmusic\",\"tmeLoginType\":{tmeLoginType}}}," +
+            $"\"req_0\":{{\"module\":\"music.musicasset.PlaylistFavWrite\",\"method\":\"{method}\"," +
+            $"\"param\":{{\"uin\":\"{uin}\",\"v_playlistId\":[{tid}]}}}}}}";
+
+        try
+        {
+            AppLogger.Info("MusicApi", $"SetPlaylistFavoriteAsync (Android) requesting: tid={tid}, favorite={favorite}");
+            var respJson = await PostAndroidAsync(payload, ct).ConfigureAwait(false);
+            AppLogger.Info("MusicApi", $"SetPlaylistFavoriteAsync (Android) response: {respJson}");
+
+            using var doc = JsonDocument.Parse(respJson);
+            if (!doc.RootElement.TryGetProperty("req_0", out var req0)) return false;
+            if (!req0.TryGetProperty("code", out var codeProp) ||
+                codeProp.ValueKind != JsonValueKind.Number ||
+                codeProp.GetInt32() != 0)
+            {
+                return false;
+            }
+
+            if (req0.TryGetProperty("data", out var data))
+            {
+                if (data.TryGetProperty("result", out var resultProp) &&
+                    resultProp.ValueKind == JsonValueKind.Number && resultProp.GetInt32() != 0)
+                {
+                    return false;
+                }
+                if (data.TryGetProperty("v_failedPlaylistId", out var failed) && failed.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in failed.EnumerateArray())
+                    {
+                        if (item.ValueKind == JsonValueKind.Number && item.GetInt64() == tid) return false;
+                        if (item.ValueKind == JsonValueKind.String &&
+                            item.GetString() == tid.ToString(System.Globalization.CultureInfo.InvariantCulture)) return false;
+                    }
+                }
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("MusicApi", $"SetPlaylistFavoriteAsync (Android) exception for tid={tid}, favorite={favorite}", ex);
             return false;
         }
     }

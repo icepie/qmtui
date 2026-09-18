@@ -329,3 +329,29 @@ export async function qmtuiSetSongFavorite(song: QmtuiSong, favorite: boolean): 
 		return false;
 	}
 }
+
+/** 歌单是否已收藏。 */
+export async function qmtuiPlaylistFavorite(tid: number): Promise<boolean> {
+	try {
+		const data = await json(`/api/library/playlist/favorite?tid=${tid}`);
+		return Boolean(data.isFavorite ?? data.IsFavorite);
+	} catch (error) {
+		console.error("[qmtui] 读取歌单收藏状态失败", error);
+		return false;
+	}
+}
+
+/** 收藏 / 取消收藏歌单。 */
+export async function qmtuiSetPlaylistFavorite(tid: number, favorite: boolean): Promise<boolean> {
+	try {
+		const response = await fetch("/api/library/playlist/favorite", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ tid, favorite }),
+		});
+		return response.ok;
+	} catch (error) {
+		console.error("[qmtui] 收藏歌单失败", error);
+		return false;
+	}
+}

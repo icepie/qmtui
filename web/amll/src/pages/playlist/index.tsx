@@ -46,6 +46,11 @@ import { ViewportList } from "react-viewport-list";
 import { PageContainer } from "../../components/PageContainer/index.tsx";
 import { PlaylistCover } from "../../components/PlaylistCover/index.tsx";
 import { PlaylistSongCard } from "../../components/PlaylistSongCard/index.tsx";
+// qmtui 修改：歌单收藏
+import {
+	qmtuiPlaylistFavorite,
+	qmtuiSetPlaylistFavorite,
+} from "../../utils/qmtui-library.ts";
 import { queueManagerAtom } from "../../states/appAtoms.ts";
 import { db, type Song } from "../../utils/db-client.ts";
 import { queuePlaylistIdAtom } from "../../utils/play-queue-manager.ts";
@@ -628,6 +633,7 @@ export const Component: FC = () => {
 												随机播放
 											</Trans>
 										</Button>
+										<PlaylistFavoriteButton tid={Number(param.id)} />
 										{/* qmtui 修改：本地文件在网页模式下不可用，移除「添加本地歌曲」 */}
 										{isFolderPlaylist && (
 											<Button variant="soft" onClick={onRefreshPlaylist}>
@@ -1004,3 +1010,33 @@ export const Component: FC = () => {
 Component.displayName = "PlaylistPage";
 
 export default Component;
+
+/** qmtui 修改：歌单收藏（网页端原本没有入口）。 */
+const PlaylistFavoriteButton: FC<{ tid: number }> = ({ tid }) => {
+	const [isFavorite, setIsFavorite] = useState<boolean | null>(null);
+
+	useEffect(() => {
+		if (!Number.isFinite(tid) || tid <= 0) return;
+		let alive = true;
+		void qmtuiPlaylistFavorite(tid).then((value) => {
+			if (alive) setIsFavorite(value);
+		});
+		return () => {
+			alive = false;
+		};
+	}, [tid]);
+
+	return (
+		<Button
+			variant="soft"
+			disabled={isFavorite === null}
+			onClick={() => {
+				const next = !isFavorite;
+				setIsFavorite(next);
+				void qmtuiSetPlaylistFavorite(tid, next);
+			}}
+		>
+			{isFavorite ? "已收藏" : "收藏歌单"}
+		</Button>
+	);
+};
