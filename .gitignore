@@ -25,6 +25,7 @@ qqmusiclinux/
 node_modules/
 # 前端构建产物（源码位于 web/）
 www/qqmusic/
+www/amll/
 歌单类.md
 
 # 本地发布与 AUR 独立打包配置
