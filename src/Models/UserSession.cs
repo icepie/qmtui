@@ -306,6 +306,6 @@ public sealed class UserSession
         return sb.ToString();
     }
 
-    private static string JsonEscape(string s) =>
-        s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
+    private static string JsonEscape(string? s) =>
+        s is null ? "" : s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
 }
