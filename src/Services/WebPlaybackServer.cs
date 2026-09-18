@@ -357,6 +357,11 @@ public sealed partial class WebPlaybackServer : IDisposable
                 else if (path.StartsWith("/amll/", StringComparison.Ordinal))
                 {
                     byte[] content = StaticResourceHelper.LoadStaticBytes(path.TrimStart('/'));
+                    if (content.Length == 0 && !Path.HasExtension(path))
+                    {
+                        // SPA 深链（如 /amll/settings）回退到入口页
+                        content = StaticResourceHelper.LoadStaticBytes("amll/index.html");
+                    }
                     if (content.Length == 0)
                     {
                         await SendResponseAsync(stream, 404, "Not Found", "text/plain", "Not Found", ct).ConfigureAwait(false);

@@ -1,0 +1,6 @@
+# 本目录自成一个包：允许这些依赖执行构建脚本（原生二进制/wasm）
+allowBuilds:
+  esbuild: true
+  '@swc/core': true
+  '@biomejs/biome': true
+  '@parcel/watcher': true

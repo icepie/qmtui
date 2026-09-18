@@ -1,13 +1,19 @@
-# 许可与来源说明
+# 来源、改动与许可（qmtui 附加应用 /amll）
 
-本目录是 qmtui 的独立附加应用（“AMLL 风格歌词页”），通过 HTTP/WebSocket 与 qmtui 主程序通信，
-与 qmtui 本体（MIT，见仓库根 LICENSE）属于不同程序。
+本目录是 **amll-dev/amll-player** 的前端代码（上游：https://github.com/amll-dev/amll-player ，
+许可 AGPL-3.0，全文见同目录 LICENSE），由 qmtui vendoring 后在浏览器中运行，并做了以下改动
+（均以 `qmtui 修改` 注释标记）：
 
-它使用 AMLL（Apple Music-like Lyrics）作为歌词与背景渲染内核：
+1. `vite.config.ts`：挂载到子路径 `/amll`，产物输出到仓库 `www/amll`；把 `@tauri-apps/*`
+   指向 `shims/tauri/*` 垫片（浏览器里没有 Tauri 运行时）。
+2. `src/utils/player.ts`：播放器接缝改为对接 qmtui 后端 —— 消息走 `/api/toggle`、`/api/next`、
+   `/api/previous`、`/api/seek`、`/api/action`、`/api/library/play`，状态来自 `/api/ws`；
+   音频始终由 qmtui 的 CLI 输出。
+3. `src/components/QmtuiMusicContext`（新增）：把状态帧映射到 AMLL 的播放器 atoms，并把
+   播放控制回给 CLI；含 60fps 本地位移插值（状态帧是粗粒度的，否则歌词会跳）。
+4. `src/router.tsx`：路由 basename 取 `import.meta.env.BASE_URL`。
+5. `src/App.tsx`：移除桌面专属能力（本地文件音源、ws-protocol 音源、任务栏歌词扩展、
+   Tauri 更新检查），挂载 `QmtuiMusicContext`。
+6. `index.html`：网页模式下隐藏 Tauri 窗口按钮。
 
-- 上游：https://github.com/amll-dev/applemusic-like-lyrics
-- 许可：AGPL-3.0（全文见同目录 LICENSE）
-- 依赖：@applemusic-like-lyrics/core、@applemusic-like-lyrics/lyric
-
-因此**本目录下的源码同样以 AGPL-3.0 提供**（见 LICENSE）；其余 qmtui 代码仍为 MIT。
-如需再分发通过 HTTP 提供本页面，请一并提供本目录源码或上游源码链接。
+因此**本目录源码以 AGPL-3.0 提供**；qmtui 其余部分仍为 MIT（见仓库根 LICENSE）。

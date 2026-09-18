@@ -1,0 +1,11 @@
+export const BaseDirectory = new Proxy({}, { get: (_t, key) => String(key) });
+export const appDataDir = async () => '/qmtui-amll';
+export const appConfigDir = async () => '/qmtui-amll';
+export const join = async (...parts) => parts.filter(Boolean).join('/');
+export const resolve = async (...parts) => parts.filter(Boolean).join('/');
+export const dirname = async (p) => String(p).replace(/\/[^/]*$/, '');
+export const basename = async (p) => String(p).split('/').pop() ?? '';
+export const sep = '/';
+export const normalize = async (p) => String(p).replace(/\\/g, '/');
+export const extname = async (p) => { const m = /\.[^./]*$/.exec(String(p)); return m ? m[0] : ''; };
+export const isAbsolute = async (p) => String(p).startsWith('/');

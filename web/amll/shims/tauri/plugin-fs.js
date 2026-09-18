@@ -1,0 +1,13 @@
+export const readDir = async () => [];
+export const readTextFile = async () => '';
+export const readFile = async () => new Uint8Array();
+export const writeTextFile = async () => {};
+export const writeFile = async () => {};
+export const exists = async () => false;
+export const mkdir = async () => {};
+export const remove = async () => {};
+export const rename = async () => {};
+export const copyFile = async () => {};
+export const stat = async () => ({ size: 0, isDirectory: false, isFile: true, mtime: new Date() });
+export const lstat = stat;
+export const BaseDirectory = new Proxy({}, { get: (_t, key) => String(key) });

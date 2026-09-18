@@ -32,3 +32,4 @@ www/amll/
 AUR/
 release-aur.sh
 bump-version.sh
+web/amll/node_modules/

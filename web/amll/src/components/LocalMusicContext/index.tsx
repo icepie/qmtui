@@ -1,0 +1,680 @@
+import {
+	AudioQualityType,
+	fftDataAtom,
+	fftDataRangeAtom,
+	hideLyricViewAtom,
+	isLyricPageOpenedAtom,
+	lowFreqVolumeAtom,
+	type MusicQualityState,
+	musicAlbumNameAtom,
+	musicArtistsAtom,
+	musicCoverAtom,
+	musicCoverIsVideoAtom,
+	musicDurationAtom,
+	musicIdAtom,
+	musicLyricLinesAtom,
+	musicNameAtom,
+	musicPlayingAtom,
+	musicPlayingPositionAtom,
+	musicQualityAtom,
+	musicQualityTagAtom,
+	musicVolumeAtom,
+	onChangeVolumeAtom,
+	onClickAudioQualityTagAtom,
+	onClickControlThumbAtom,
+	onCycleRepeatModeAtom,
+	onLyricLineClickAtom,
+	onPlayOrResumeAtom,
+	onRequestNextSongAtom,
+	onRequestOpenMenuAtom,
+	onRequestPrevSongAtom,
+	onSeekPositionAtom,
+	onToggleShuffleAtom,
+} from "@applemusic-like-lyrics/react-full";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import chalk from "chalk";
+import { useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
+import { type FC, useEffect, useLayoutEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
+import { toast } from "react-toastify";
+import { useLyricParser } from "../../hooks/useLyricParser.ts";
+import {
+	audioQualityDialogOpenedAtom,
+	currentLyricAuthorsAtom,
+	currentSongWritersAtom,
+	enableMediaControlsAtom,
+	queueManagerAtom,
+} from "../../states/appAtoms.ts";
+import { db } from "../../utils/db-client.ts";
+import { SyncStatus, syncLyrics } from "../../utils/lyric-db-api.ts";
+import { PlayQueueManager } from "../../utils/play-queue-manager.ts";
+import {
+	type AudioQuality,
+	type AudioThreadEvent,
+	emitAudioThread,
+	initAudioThread,
+	listenAudioThreadEvent,
+} from "../../utils/player.ts";
+import { useDbQuery } from "../../utils/use-db-query.ts";
+
+export const FFTToLowPassContext: FC = () => {
+	const store = useStore();
+	const fftDataRange = useAtomValue(fftDataRangeAtom);
+	const isLyricPageOpened = useAtomValue(isLyricPageOpenedAtom);
+
+	useEffect(() => {
+		emitAudioThread("setFFTRange", {
+			fromFreq: fftDataRange[0],
+			toFreq: fftDataRange[1],
+		});
+	}, [fftDataRange]);
+
+	useEffect(() => {
+		// The low-frequency value only drives the full-screen lyric background.
+		// Keep this loop stopped while that view is hidden.
+		if (!isLyricPageOpened) return;
+		let rafId: number;
+		let curValue = 1;
+		let lt = 0;
+
+		const gradient: number[] = [];
+
+		function amplitudeToLevel(amplitude: number): number {
+			const normalizedAmplitude = amplitude / 255;
+			const level = 0.5 * Math.log10(normalizedAmplitude + 1);
+			return level;
+		}
+
+		function calculateGradient(fftData: number[]): number {
+			const window = 10;
+			const volume =
+				(amplitudeToLevel(fftData[0]) + amplitudeToLevel(fftData[1])) * 0.5;
+			if (gradient.length < window && !gradient.includes(volume)) {
+				gradient.push(volume);
+				return 0;
+			}
+			gradient.shift();
+			gradient.push(volume);
+
+			const maxInInterval = Math.max(...gradient) ** 2;
+			const minInInterval = Math.min(...gradient);
+			const difference = maxInInterval - minInInterval;
+			// console.log(volume, maxInInterval, minInInterval, difference);
+			return difference > 0.35 ? maxInInterval : minInInterval * 0.5 ** 2;
+		}
+
+		const onFrame = (dt: number) => {
+			const fftData = store.get(fftDataAtom);
+
+			const delta = dt - lt;
+			const gradient = calculateGradient(fftData);
+
+			const value = gradient;
+
+			const increasing = curValue < value;
+
+			if (increasing) {
+				curValue = Math.min(
+					value,
+					curValue + (value - curValue) * 0.003 * delta,
+				);
+			} else {
+				curValue = Math.max(
+					value,
+					curValue + (value - curValue) * 0.003 * delta,
+				);
+			}
+
+			if (Number.isNaN(curValue)) curValue = 1;
+
+			store.set(lowFreqVolumeAtom, curValue);
+
+			lt = dt;
+			rafId = requestAnimationFrame(onFrame);
+		};
+		rafId = requestAnimationFrame(onFrame);
+		return () => {
+			cancelAnimationFrame(rafId);
+		};
+	}, [store, isLyricPageOpened]);
+
+	return null;
+};
+
+const MusicQualityTagText: FC = () => {
+	const { t } = useTranslation();
+	const musicQuality = useAtomValue<MusicQualityState>(musicQualityAtom);
+	const setMusicQualityTag = useSetAtom(musicQualityTagAtom);
+
+	useLayoutEffect(() => {
+		switch (musicQuality.type) {
+			case AudioQualityType.None:
+				return setMusicQualityTag(null);
+
+			case AudioQualityType.Lossless:
+				return setMusicQualityTag({
+					tagIcon: true,
+					tagText: t("amll.qualityTag.lossless", "无损"),
+					isDolbyAtmos: false,
+				});
+
+			case AudioQualityType.HiResLossless:
+				return setMusicQualityTag({
+					tagIcon: true,
+					tagText: t("amll.qualityTag.hires", "高解析度无损"),
+					isDolbyAtmos: false,
+				});
+
+			case AudioQualityType.DolbyAtmos:
+				return setMusicQualityTag({
+					tagIcon: false,
+					tagText: "",
+					isDolbyAtmos: true,
+				});
+
+			default:
+				return setMusicQualityTag(null);
+		}
+	}, [t, musicQuality, setMusicQualityTag]);
+
+	return null;
+};
+const LYRIC_LOG_TAG = chalk.bgHex("#FF4444").hex("#FFFFFF")(" LYRIC ");
+
+const LyricContext: FC = () => {
+	const musicId = useAtomValue(musicIdAtom);
+	const setLyricLines = useSetAtom(musicLyricLinesAtom);
+	const setHideLyricView = useSetAtom(hideLyricViewAtom);
+	const setLyricAuthors = useSetAtom(currentLyricAuthorsAtom);
+	const setSongWriters = useSetAtom(currentSongWritersAtom);
+	const { data: song } = useDbQuery(
+		() => (musicId ? db.songs.get(musicId) : Promise.resolve(undefined)),
+		[musicId],
+		undefined,
+		["songs"],
+	);
+
+	useEffect(() => {
+		syncLyrics().then((result) => {
+			switch (result.status) {
+				case SyncStatus.Updated:
+					console.log(
+						LYRIC_LOG_TAG,
+						`歌词库更新完成，新增 ${result.count} 个歌词`,
+					);
+					break;
+				// case SyncStatus.Skipped:
+				// 	console.log(LYRIC_LOG_TAG, "歌词库已是最新");
+				// 	break;
+				// case SyncStatus.Failed:
+				// 	console.warn(LYRIC_LOG_TAG, "歌词库同步失败", result.error);
+				// 	break;
+				// case SyncStatus.Empty:
+				// 	console.log(LYRIC_LOG_TAG, "远程歌词库为空");
+				// 	break;
+			}
+		});
+	}, []);
+
+	const { lyricLines, hasLyrics, metadata } = useLyricParser(
+		song?.lyric,
+		song?.lyricFormat,
+		song?.translatedLrc ?? undefined,
+		song?.romanLrc ?? undefined,
+	);
+
+	useEffect(() => {
+		setLyricLines(lyricLines);
+		setHideLyricView(!hasLyrics);
+
+		let lyricAuthors: string[] = [];
+		let songWriters: string[] = [];
+
+		if (metadata && metadata.length > 0) {
+			for (const [key, values] of metadata) {
+				if (key === "ttmlAuthorGithubLogin") {
+					lyricAuthors = values;
+				} else if (key === "songwriters") {
+					songWriters = values;
+				}
+			}
+		}
+
+		setLyricAuthors(lyricAuthors);
+		setSongWriters(songWriters);
+	}, [
+		lyricLines,
+		hasLyrics,
+		metadata,
+		setLyricLines,
+		setHideLyricView,
+		setLyricAuthors,
+		setSongWriters,
+	]);
+
+	return null;
+};
+
+export const LocalMusicContext: FC = () => {
+	const store = useStore();
+	const { t } = useTranslation();
+	const firstPlay = useRef(true);
+	const [musicPlaying, setMusicPlaying] = useAtom(musicPlayingAtom);
+	const lastSyncRef = useRef({
+		position: 0,
+		timestamp: performance.now(),
+	});
+
+	const syncMusicInfo = async (
+		data: Extract<AudioThreadEvent, { type: "loadAudio" }>["data"],
+	) => {
+		if (!data?.musicInfo) {
+			console.error("[syncMusicInfo] Invalid data, aborting.");
+			return;
+		}
+
+		const musicId = data.musicId;
+
+		try {
+			store.set(musicIdAtom, musicId);
+
+			const songFromDb = await db.songs.get(musicId);
+
+			if (songFromDb) {
+				store.set(musicNameAtom, songFromDb.songName);
+				store.set(musicAlbumNameAtom, songFromDb.songAlbum);
+				store.set(
+					musicArtistsAtom,
+					songFromDb.songArtists.split("/").map((v) => ({
+						id: v.trim(),
+						name: v.trim(),
+					})),
+				);
+
+				if (songFromDb.coverPath) {
+					const coverPath = songFromDb.coverPath;
+					if (coverPath.startsWith("http://") || coverPath.startsWith("https://")) {
+						store.set(musicCoverAtom, coverPath);
+					} else {
+						store.set(musicCoverAtom, convertFileSrc(coverPath));
+					}
+					store.set(
+						musicCoverIsVideoAtom,
+						coverPath.endsWith(".mp4"),
+					);
+				} else {
+					store.set(
+						musicCoverAtom,
+						"data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+					);
+					store.set(musicCoverIsVideoAtom, false);
+				}
+			} else {
+				store.set(musicNameAtom, data.musicInfo.name);
+				store.set(musicAlbumNameAtom, data.musicInfo.album);
+				store.set(
+					musicArtistsAtom,
+					data.musicInfo.artist.split("/").map((v: string) => ({
+						id: v.trim(),
+						name: v.trim(),
+					})),
+				);
+
+				store.set(
+					musicCoverAtom,
+					"data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+				);
+				store.set(musicCoverIsVideoAtom, false);
+			}
+			if (data.musicInfo?.duration) {
+				store.set(musicDurationAtom, (data.musicInfo.duration * 1000) | 0);
+			} else if (songFromDb?.duration) {
+				store.set(musicDurationAtom, (songFromDb.duration * 1000) | 0);
+			}
+		} catch (error) {
+			console.error(
+				"[syncMusicInfo] An error occurred during state update:",
+				error,
+			);
+		}
+	};
+
+	useEffect(() => {
+		if (musicPlaying && firstPlay.current) {
+			firstPlay.current = false;
+			const mediaControlsEnabled = store.get(enableMediaControlsAtom);
+			if (mediaControlsEnabled) {
+				emitAudioThread("setMediaControlsEnabled", { enabled: true });
+			}
+		}
+	}, [musicPlaying, store]);
+
+	useEffect(() => {
+		let rafId: number;
+
+		const updateLoop = () => {
+			const isPlaying = store.get(musicPlayingAtom);
+			const now = performance.now();
+
+			if (isPlaying) {
+				const dt = (now - lastSyncRef.current.timestamp) / 1000;
+				const newPos = lastSyncRef.current.position + dt;
+
+				const duration = store.get(musicDurationAtom) / 1000;
+				const clampedPos = Math.min(newPos, duration || 0);
+
+				lastSyncRef.current.position = clampedPos;
+				lastSyncRef.current.timestamp = now;
+				const nextPosition = (clampedPos * 1000) | 0;
+				if (nextPosition !== store.get(musicPlayingPositionAtom)) {
+					store.set(musicPlayingPositionAtom, nextPosition);
+				}
+			} else {
+				const currentUIPosition = store.get(musicPlayingPositionAtom) / 1000;
+				lastSyncRef.current.position = currentUIPosition;
+				lastSyncRef.current.timestamp = now;
+			}
+			rafId = requestAnimationFrame(updateLoop);
+		};
+
+		rafId = requestAnimationFrame(updateLoop);
+		return () => cancelAnimationFrame(rafId);
+	}, [store]);
+
+	useEffect(() => {
+		initAudioThread();
+		const toEmit = <T,>(onEmit: T) => ({ onEmit });
+
+		const queueManager = new PlayQueueManager(store);
+		store.set(queueManagerAtom, queueManager);
+
+		// 恢复上次的队列信息
+		queueManager.restore().then(({ restored, position }) => {
+			if (restored) {
+				const currentSong = queueManager.getCurrentSong();
+				if (currentSong) {
+					// 恢复播放进度
+					emitAudioThread("playAudio", {
+						song: {
+							songId: currentSong.id,
+							filePath: currentSong.filePath,
+						},
+					});
+					emitAudioThread("pauseAudio");
+
+					if (position > 0) {
+						lastSyncRef.current = {
+							position,
+							timestamp: performance.now(),
+						};
+						store.set(musicPlayingPositionAtom, (position * 1000) | 0);
+						emitAudioThread("seekAudio", { position });
+					}
+				}
+			}
+		});
+
+		const onBeforeUnload = () => {
+			queueManager.dispose();
+		};
+		window.addEventListener("beforeunload", onBeforeUnload);
+
+		store.set(
+			onClickAudioQualityTagAtom,
+			toEmit(() => {
+				store.set(audioQualityDialogOpenedAtom, true);
+			}),
+		);
+
+		store.set(
+			onPlayOrResumeAtom,
+			toEmit(() => {
+				emitAudioThread("resumeOrPauseAudio");
+			}),
+		);
+
+		store.set(
+			onRequestNextSongAtom,
+			toEmit(() => {
+				queueManager.advanceForUser();
+			}),
+		);
+
+		store.set(
+			onRequestPrevSongAtom,
+			toEmit(() => {
+				queueManager.retreatForUser();
+			}),
+		);
+		store.set(
+			onToggleShuffleAtom,
+			toEmit(() => {
+				queueManager.toggleShuffle();
+			}),
+		);
+		store.set(
+			onCycleRepeatModeAtom,
+			toEmit(() => {
+				queueManager.cycleRepeatMode();
+			}),
+		);
+		store.set(
+			onClickControlThumbAtom,
+			toEmit(() => {
+				store.set(isLyricPageOpenedAtom, false);
+			}),
+		);
+		store.set(
+			onSeekPositionAtom,
+			toEmit((time: number) => {
+				const targetPos = time / 1000;
+				lastSyncRef.current = {
+					position: targetPos,
+					timestamp: performance.now(),
+				};
+				store.set(musicPlayingPositionAtom, time);
+
+				emitAudioThread("seekAudio", {
+					position: targetPos,
+				});
+			}),
+		);
+		store.set(
+			onLyricLineClickAtom,
+			toEmit((evt) => {
+				const targetTimeMs = evt.line.getLine().startTime;
+				const targetPos = targetTimeMs / 1000;
+
+				lastSyncRef.current = {
+					position: targetPos,
+					timestamp: performance.now(),
+				};
+				store.set(musicPlayingPositionAtom, targetTimeMs);
+
+				emitAudioThread("seekAudio", {
+					position: targetPos,
+				});
+			}),
+		);
+		store.set(
+			onChangeVolumeAtom,
+			toEmit((volume: number) => {
+				emitAudioThread("setVolume", {
+					volume,
+				});
+			}),
+		);
+		store.set(
+			onRequestOpenMenuAtom,
+			toEmit(() => {
+				toast.info(
+					t("amll.openMenuViaRightClick", "请右键歌词页任意位置来打开菜单哦！"),
+				);
+			}),
+		);
+
+		const unlistenPromise = listenAudioThreadEvent(async (evt) => {
+			const evtData = evt.payload.data;
+			switch (evtData?.type) {
+				case "playPosition": {
+					const now = performance.now();
+					const dt = (now - lastSyncRef.current.timestamp) / 1000;
+					const currentExtrapolated = lastSyncRef.current.position + dt;
+
+					if (Math.abs(currentExtrapolated - evtData.data.position) > 0.05) {
+						lastSyncRef.current = {
+							position: evtData.data.position,
+							timestamp: now,
+						};
+						store.set(
+							musicPlayingPositionAtom,
+							(evtData.data.position * 1000) | 0,
+						);
+					}
+					break;
+				}
+
+				case "loadAudio": {
+					const data = evtData.data;
+
+					if (data.quality) {
+						store.set(musicQualityAtom, processAudioQuality(data.quality));
+					}
+					if (data.musicInfo) {
+						store.set(musicDurationAtom, (data.musicInfo.duration * 1000) | 0);
+					}
+
+					lastSyncRef.current = {
+						position: 0,
+						timestamp: performance.now(),
+					};
+					store.set(musicPlayingPositionAtom, 0);
+
+					const currentMusicId = store.get(musicIdAtom);
+					const newMusicId = data.musicId || "";
+
+					if (newMusicId && newMusicId !== currentMusicId) {
+						await syncMusicInfo(data);
+					}
+					break;
+				}
+
+				case "playStatus": {
+					setMusicPlaying(evtData.data.isPlaying);
+					break;
+				}
+
+				case "trackEnded": {
+					queueManager.advanceForAutoEnd();
+					break;
+				}
+
+				case "hardwareMediaCommand": {
+					if (evtData.data.command === "next") {
+						queueManager.advanceForUser();
+					} else if (evtData.data.command === "prev") {
+						queueManager.retreatForUser();
+					} else if (evtData.data.command === "toggleShuffle") {
+						queueManager.toggleShuffle();
+					} else if (evtData.data.command === "toggleRepeat") {
+						queueManager.cycleRepeatMode();
+					}
+					break;
+				}
+
+				case "loadError": {
+					toast.error(
+						t("amll.loadAudioError", "播放后端加载音频失败\n{error}", {
+							error: evtData.data.error,
+						}),
+						{},
+					);
+					break;
+				}
+
+				case "volumeChanged": {
+					store.set(musicVolumeAtom, evtData.data.volume);
+					break;
+				}
+
+				case "fftData": {
+					store.set(fftDataAtom, evtData.data.data);
+					break;
+				}
+			}
+		});
+
+		return () => {
+			unlistenPromise.then((unlisten) => unlisten());
+
+			window.removeEventListener("beforeunload", onBeforeUnload);
+
+			queueManager.dispose();
+			store.set(queueManagerAtom, null);
+
+			const doNothing = toEmit(() => {});
+			store.set(onClickAudioQualityTagAtom, doNothing);
+			store.set(onRequestNextSongAtom, doNothing);
+			store.set(onRequestPrevSongAtom, doNothing);
+			store.set(onPlayOrResumeAtom, doNothing);
+			store.set(onClickControlThumbAtom, doNothing);
+			store.set(onSeekPositionAtom, doNothing);
+			store.set(onLyricLineClickAtom, doNothing);
+			store.set(onChangeVolumeAtom, doNothing);
+			store.set(onRequestOpenMenuAtom, doNothing);
+		};
+	}, [store, t]);
+
+	return (
+		<>
+			<LyricContext />
+			<FFTToLowPassContext />
+			<MusicQualityTagText />
+		</>
+	);
+};
+
+function processAudioQuality(
+	quality: AudioQuality | undefined,
+): MusicQualityState {
+	const definiteQuality = {
+		sampleRate: quality?.sampleRate ?? 0,
+		bitsPerCodedSample: quality?.bitsPerCodedSample ?? 0,
+		bitsPerSample: quality?.bitsPerSample ?? 0,
+		channels: quality?.channels ?? 0,
+		sampleFormat: quality?.sampleFormat ?? "unknown",
+		codec: quality?.codec ?? "unknown",
+	};
+
+	if (definiteQuality.codec === "unknown") {
+		return {
+			...definiteQuality,
+			type: AudioQualityType.None,
+		};
+	}
+
+	const isLosslessCodec = ["flac", "alac", "ape", "wav", "aiff"].includes(
+		definiteQuality.codec.toLowerCase(),
+	);
+
+	if (isLosslessCodec) {
+		const sampleRate = definiteQuality.sampleRate;
+		const bitsPerSample = definiteQuality.bitsPerSample;
+
+		if (sampleRate >= 96000 && bitsPerSample >= 24) {
+			return {
+				...definiteQuality,
+				type: AudioQualityType.HiResLossless,
+			};
+		}
+		return {
+			...definiteQuality,
+			type: AudioQualityType.Lossless,
+		};
+	}
+
+	return {
+		...definiteQuality,
+		type: AudioQualityType.None,
+	};
+}
