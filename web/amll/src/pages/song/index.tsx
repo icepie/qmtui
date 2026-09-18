@@ -16,9 +16,18 @@ import { db } from "../../utils/db-client.ts";
 import { useDbQuery } from "../../utils/use-db-query.ts";
 import { useSongCover } from "../../utils/use-song-cover.ts";
 import { BasicTabContent } from "./basic.tsx";
+// qmtui 修改：歌曲评论
+import { CommentsSection } from "./comments.tsx";
 import { LyricTabContent } from "./lyric.tsx";
 import { MetadataTabContent } from "./metadata.tsx";
 import { SongContext } from "./song-ctx.ts";
+
+/** qmtui 修改：从 SongContext 取 songId 传给评论区 */
+const SongComments: FC = () => {
+	const song = useContext(SongContext);
+	if (!song) return null;
+	return <CommentsSection songId={song.id} />;
+};
 
 const SongPageHeader: FC = () => {
 	const song = useContext(SongContext);
@@ -94,6 +103,8 @@ export const Component: FC = () => {
 						<ExtensionInjectPoint injectPointName="page.song.tab.content.after" />
 					</Box>
 				</Tabs.Root>
+				{/* qmtui 修改：评论（CLI 的评论接口，网页端原本没有入口） */}
+				<SongComments />
 			</SongContext.Provider>
 		</Container>
 	);
