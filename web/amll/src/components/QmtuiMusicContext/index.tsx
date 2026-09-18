@@ -224,7 +224,10 @@ export const QmtuiMusicContext: FC = () => {
 						duration: Number(item.duration) || 0,
 						lyricFormat: "",
 						lyric: "",
-						coverPath: null,
+						// 面板直接用这个地址显示封面（与 CLI 的取图地址一致）
+						coverPath: item.albumMid
+							? `https://y.qq.com/music/photo_new/T002R300x300M000${String(item.albumMid)}.jpg`
+							: null,
 					}));
 					const internal = queueManager as unknown as {
 						originalList: unknown[];
