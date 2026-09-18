@@ -44,6 +44,20 @@ export const BasicTabContent: FC = () => {
 					</Flex>
 				</DataList.Value>
 			</DataList.Item>
+			{/* qmtui 修改：专辑入口 */}
+			<DataList.Item>
+				<DataList.Label>专辑</DataList.Label>
+				<DataList.Value>
+					{(() => {
+						const raw = song ? rawQmtuiSong(String(song.id)) : undefined;
+						return raw?.albumMid ? (
+							<Link to={`/album/${raw.albumMid}`}>{raw.album || song?.songAlbum || ""}</Link>
+						) : (
+							<Text color="gray">{song?.songAlbum || "未知"}</Text>
+						);
+					})()}
+				</DataList.Value>
+			</DataList.Item>
 			<DataList.Item>
 				<DataList.Label>
 					<Trans i18nKey="page.song.basic.musicId">音乐 ID</Trans>

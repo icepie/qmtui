@@ -33,6 +33,12 @@ export const router = createBrowserRouter(
 				lazy={() => import("./pages/song/index.tsx")}
 				errorElement={<ErrorPage />}
 			/>
+			{/* qmtui 修改：专辑页 */}
+			<Route
+				path="/album/:id"
+				lazy={() => import("./pages/album/index.tsx")}
+				errorElement={<ErrorPage />}
+			/>
 			{/* qmtui 修改：歌手页 */}
 			<Route
 				path="/singer/:id"

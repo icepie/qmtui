@@ -167,7 +167,7 @@ export const Component: FC = () => {
 							<Card
 								key={album.mid}
 								style={{ cursor: "pointer" }}
-								onClick={() => navigate(`/song/${album.id ?? ""}`)}
+								onClick={() => navigate(`/album/${album.mid ?? ""}`)}
 							>
 								<Flex direction="column" gap="2" align="center">
 									<Avatar
