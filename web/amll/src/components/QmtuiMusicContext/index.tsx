@@ -150,8 +150,10 @@ export const QmtuiMusicContext: FC = () => {
 		const onDocumentClick = (event: MouseEvent) => {
 			const target = event.target instanceof Element ? event.target : null;
 			if (!target?.closest('[class*="controlThumb"]')) return;
+			// 上游只有 Esc 一条关闭路径（AMLLWrapper 里的 keydown 监听），
+			// 这里复用它的处理逻辑，保证与桌面端一致。
+			window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 			store.set(isLyricPageOpenedAtom, false);
-			store.set(hideLyricViewAtom, false);
 		};
 		document.addEventListener("click", onDocumentClick, true);
 
