@@ -139,6 +139,10 @@ import { state } from './bridge/state.js';
       songnum: Number(item.songCount || item.songNum) || 0,
       picUrl: item.picUrl || item.picurl || '',
       picurl: item.picUrl || item.picurl || '',
+      // 原生 formatSelfFavPlayListItem 会用 item.logo 重建 picurl，没带 isFormat 时
+      // 我们传的 picUrl 会被丢掉（封面变默认图）。补 logo 并标记已格式化，两条路都保住封面。
+      logo: item.picUrl || item.picurl || '',
+      isFormat: true,
       subtitle: `${Number(item.songCount || item.songNum) || 0} 首歌曲`,
       qmtuiRemote: true,
     };
