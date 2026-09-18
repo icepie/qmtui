@@ -3,6 +3,7 @@ import { CopyIcon } from "@radix-ui/react-icons";
 import { Button, Code, DataList, Flex, IconButton, Select, Text } from "@radix-ui/themes";
 import { useAtomValue } from "jotai";
 import { type FC, useContext, useState } from "react";
+import { Link } from "react-router-dom";
 import { Trans, useTranslation } from "react-i18next";
 // qmtui 修改：播放音质选择（帧里带当前档位与可用档位）
 import {
@@ -23,6 +24,26 @@ export const BasicTabContent: FC = () => {
 	const [downloadNotice, setDownloadNotice] = useState("");
 	return (
 		<DataList.Root>
+			{/* qmtui 修改：歌手入口（点进歌手页） */}
+			<DataList.Item>
+				<DataList.Label>歌手</DataList.Label>
+				<DataList.Value>
+					<Flex gap="3" wrap="wrap">
+						{(song ? (rawQmtuiSong(String(song.id))?.singers ?? []) : []).map((singer) =>
+							singer.mid ? (
+								<Link key={singer.mid} to={`/singer/${singer.mid}`}>
+									{singer.name}
+								</Link>
+							) : (
+								<Text key={singer.name}>{singer.name}</Text>
+							),
+						)}
+						{(song ? (rawQmtuiSong(String(song.id))?.singers ?? []) : []).length === 0 ? (
+							<Text color="gray">{song?.songArtists || "未知"}</Text>
+						) : null}
+					</Flex>
+				</DataList.Value>
+			</DataList.Item>
 			<DataList.Item>
 				<DataList.Label>
 					<Trans i18nKey="page.song.basic.musicId">音乐 ID</Trans>
