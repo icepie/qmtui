@@ -1,6 +1,7 @@
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using QmTui.Api;
@@ -385,67 +386,131 @@ public sealed partial class WebPlaybackServer
         await SendMutationResultAsync(stream, ok, ok ? (add ? "添加成功" : "移除成功") : (add ? "添加失败" : "移除失败"), ct).ConfigureAwait(false);
     }
 
-    // The recovered web bundle issues playlist mutations through its batched
-    // ufetch() POST to u.y.qq.com/cgi-bin/musicu.fcg. qmtui-bootstrap rewrites
-    // that XHR to /api/browser/ufetch and forwards the body here so the native
-    // "添加到歌单" flow performs a real mutation instead of a blind {code:0}
-    // noop that made the bundle throw on res.addSongsToPlayList.code.
-    private static async Task HandleBrowserUfetchAsync(NetworkStream stream, string body, CancellationToken ct)
+    // The recovered web bundle issues every QQ call through its batched ufetch()
+    // POST to u.y.qq.com/cgi-bin/musicu.fcg. qmtui-bootstrap rewrites those XHRs
+    // to /api/browser/ufetch (keeping the original URL) so the request can be
+    // forwarded here with the session credentials — the native pages then render
+    // from real data instead of staying blank. Writes the C# layer owns (playlist
+    // create / add / delete, incl. the dirId=201 Android path) are stripped from
+    // the forwarded body and answered from here instead.
+    private static async Task HandleBrowserUfetchAsync(NetworkStream stream, string rawPath, string body, CancellationToken ct)
     {
         if (!await RequireLoginAsync(stream, ct).ConfigureAwait(false)) return;
 
         JsonDocument? doc = null;
-        try { doc = JsonDocument.Parse(body); }
-        catch (JsonException) { /* fall through to noop */ }
+        if (!string.IsNullOrWhiteSpace(body))
+        {
+            try { doc = JsonDocument.Parse(body); }
+            catch (JsonException) { /* 非 JSON：只走转发 */ }
+        }
 
-        var sb = new StringBuilder(256);
-        sb.Append("{\"code\":0");
+        var writeOverrides = new List<(string Key, string Value)>(3);
         if (doc is not null)
         {
             var root = doc.RootElement;
-            sb.Append(await BuildUfetchCreatePlaylistAsync(root, ct).ConfigureAwait(false));
-            sb.Append(await BuildUfetchSongMutationAsync(root, "addSongsToPlayList", add: true, ct).ConfigureAwait(false));
-            sb.Append(await BuildUfetchSongMutationAsync(root, "deleteSongsFromPlayList", add: false, ct).ConfigureAwait(false));
-            sb.Append(BuildUfetchReadFragments(root));
+            if (await BuildUfetchCreatePlaylistAsync(root, ct).ConfigureAwait(false) is { } created) writeOverrides.Add(created);
+            if (await BuildUfetchSongMutationAsync(root, "addSongsToPlayList", add: true, ct).ConfigureAwait(false) is { } added) writeOverrides.Add(added);
+            if (await BuildUfetchSongMutationAsync(root, "deleteSongsFromPlayList", add: false, ct).ConfigureAwait(false) is { } removed) writeOverrides.Add(removed);
         }
-        sb.Append('}');
+
+        JsonObject? upstream = null;
+        var target = GetQueryParameter(rawPath, "url");
+        if (!string.IsNullOrEmpty(target) && IsAllowedUfetchTarget(target))
+        {
+            bool useGet = string.Equals(GetQueryParameter(rawPath, "method"), "GET", StringComparison.OrdinalIgnoreCase);
+            var forwarded = await MusicApi
+                .ForwardToQqAsync(target, useGet, StripUfetchWriteKeys(body, doc), ct)
+                .ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(forwarded))
+            {
+                try { upstream = JsonNode.Parse(forwarded) as JsonObject; } catch { }
+            }
+        }
+
+        string payload;
+        if (upstream is not null)
+        {
+            // 转发成功：读请求用上游真实数据，写操作覆盖成 C# 层的结果
+            //（那几项已从转发体里摘掉，上游不会重复执行）。
+            foreach (var (key, value) in writeOverrides)
+            {
+                if (JsonNode.Parse(value) is { } node) upstream[key] = node;
+            }
+            payload = upstream.ToJsonString();
+        }
+        else
+        {
+            // 转发不可用：退回本地实现 + 空读桩，避免 bundle 因缺 key 抛错。
+            var sb = new StringBuilder(256);
+            sb.Append("{\"code\":0");
+            foreach (var (key, value) in writeOverrides) sb.Append(",\"").Append(key).Append("\":").Append(value);
+            if (doc is not null) sb.Append(BuildUfetchReadFragments(doc.RootElement));
+            sb.Append('}');
+            payload = sb.ToString();
+        }
+
         doc?.Dispose();
-        await SendResponseAsync(stream, 200, "OK", "application/json", sb.ToString(), ct).ConfigureAwait(false);
+        await SendResponseAsync(stream, 200, "OK", "application/json", payload, ct).ConfigureAwait(false);
     }
 
-    // `,"createNewPlayList":{"code":0,"data":{"result":{"dirId":N}}}` — the
-    // bundle reads data.result.dirId to seed the follow-up AddSonglist call.
-    private static async Task<string> BuildUfetchCreatePlaylistAsync(JsonElement root, CancellationToken ct)
+    /// <summary>只允许转发到 QQ 网关域名，避免本地接口变成任意 URL 代理。</summary>
+    private static bool IsAllowedUfetchTarget(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+        uri.Scheme == Uri.UriSchemeHttps &&
+        (uri.Host.Equals("u.y.qq.com", StringComparison.OrdinalIgnoreCase) ||
+         uri.Host.Equals("c.y.qq.com", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>由 C# 层接管结果的写操作：从转发体里摘掉，回包由我们覆盖。</summary>
+    private static readonly string[] UfetchHandledWriteKeys =
+    {
+        "createNewPlayList",
+        "addSongsToPlayList",
+        "deleteSongsFromPlayList",
+    };
+
+    /// <summary>把待接管的写操作从转发体里剔除，避免上游重复执行一次。</summary>
+    private static string? StripUfetchWriteKeys(string body, JsonDocument? doc)
+    {
+        if (doc is null || doc.RootElement.ValueKind != JsonValueKind.Object) return body;
+        if (!UfetchHandledWriteKeys.Any(key => doc.RootElement.TryGetProperty(key, out _))) return body;
+        if (JsonNode.Parse(body) is not JsonObject node) return body;
+        foreach (var key in UfetchHandledWriteKeys) node.Remove(key);
+        return node.ToJsonString();
+    }
+
+    // ("createNewPlayList", {"code":0,"data":{"result":{"dirId":N}}}) — the bundle
+    // reads data.result.dirId to seed the follow-up AddSonglist call.
+    private static async Task<(string Key, string Value)?> BuildUfetchCreatePlaylistAsync(JsonElement root, CancellationToken ct)
     {
         if (!root.TryGetProperty("createNewPlayList", out var op) ||
             !op.TryGetProperty("param", out var param) ||
             !param.TryGetProperty("dirName", out var dirNameEl))
         {
-            return string.Empty;
+            return null;
         }
 
         string name = dirNameEl.GetString() ?? "";
-        if (string.IsNullOrWhiteSpace(name)) return string.Empty;
+        if (string.IsNullOrWhiteSpace(name)) return null;
 
         var (ok, dissId, _) = await MusicApi.CreatePlaylistAsync(name, ct).ConfigureAwait(false);
-        return $",\"createNewPlayList\":{{\"code\":{(ok ? "0" : "-1")},\"data\":{{\"result\":{{\"dirId\":{dissId}}}}}}}";
+        return ("createNewPlayList", $"{{\"code\":{(ok ? "0" : "-1")},\"data\":{{\"result\":{{\"dirId\":{dissId}}}}}}}");
     }
 
-    // `,"<key>":{"code":0,"data":{}}` for add/delete; "" when the batch body
-    // does not carry that key. v_songInfo items are {songType, songId, songMid}.
-    private static async Task<string> BuildUfetchSongMutationAsync(JsonElement root, string key, bool add, CancellationToken ct)
+    // (key, {"code":0,"data":{}}) for add/delete; null when the batch body does not
+    // carry that key. v_songInfo items are {songType, songId, songMid}.
+    private static async Task<(string Key, string Value)?> BuildUfetchSongMutationAsync(JsonElement root, string key, bool add, CancellationToken ct)
     {
         if (!root.TryGetProperty(key, out var op) ||
             !op.TryGetProperty("param", out var param) ||
             !param.TryGetProperty("dirId", out var dirIdEl))
         {
-            return string.Empty;
+            return null;
         }
 
         long dirId = dirIdEl.GetInt64();
         if (dirId <= 0 || !param.TryGetProperty("v_songInfo", out var songsEl) || songsEl.ValueKind != JsonValueKind.Array)
         {
-            return string.Empty;
+            return null;
         }
 
         bool ok = true;
@@ -462,20 +527,15 @@ public sealed partial class WebPlaybackServer
             if (!one) ok = false;
         }
 
-        return $",\"{key}\":{{\"code\":{(ok ? "0" : "-1")},\"data\":{{}}}}";
+        return (key, $"{{\"code\":{(ok ? "0" : "-1")},\"data\":{{}}}}");
     }
 
     // READ keys the recovered favorite page (getUserFavAssets, module 92214)
     // consumes UNGUARDED: it destructures res.getCollectSongList.code === 0
     // directly and throws a TypeError when the key is absent, surfacing
-    // "获取用户资产失败，请稍后重试". The bridge renders /like itself via
-    // /api/library/* (and hides the native page behind .route_wrap), so the
-    // native page only needs a non-throwing, well-formed empty response.
-    // Deliberately EXCLUDED: getSelfCreatePLayList / getPlaylistFavInfo /
-    // getFavSongList (refreshSelfPlayList) — those are guarded and, if we
-    // answered them, would clobber the sidebar stores refreshLibrary already
-    // populates from /api/library/playlists.
-    private static readonly (string Key, string EmptyData)[] UfetchReadKeys =
+    // "获取用户资产失败，请稍后重试". Only used as the fallback when the upstream
+    // forward is unavailable — a successful forward answers these with real data.
+    private static readonly (string Key, string Data)[] UfetchReadKeys =
     {
         ("getCollectSongList", "{\"list\":[],\"hasmore\":false,\"total\":0}"),
         ("getCollectAlbumList", "{\"v_list\":[]}"),
@@ -483,14 +543,14 @@ public sealed partial class WebPlaybackServer
         ("getMyFavMV", "{\"total\":0,\"mvlist\":[],\"hasmore\":0}"),
     };
 
-    // `,"<key>":{"code":0,"data":<EmptyData>}` for each present read key; "" otherwise.
+    // `,"<key>":{"code":0,"data":<Data>}` for each present read key; "" otherwise.
     private static string BuildUfetchReadFragments(JsonElement root)
     {
         var sb = new StringBuilder(128);
-        foreach (var (key, emptyData) in UfetchReadKeys)
+        foreach (var (key, data) in UfetchReadKeys)
         {
             if (root.TryGetProperty(key, out _))
-                sb.Append(",\"").Append(key).Append("\":{\"code\":0,\"data\":").Append(emptyData).Append('}');
+                sb.Append(",\"").Append(key).Append("\":{\"code\":0,\"data\":").Append(data).Append('}');
         }
         return sb.ToString();
     }

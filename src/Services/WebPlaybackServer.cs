@@ -387,6 +387,11 @@ public sealed partial class WebPlaybackServer : IDisposable
                 {
                     await SendResponseAsync(stream, 200, "OK", "application/json", "{\"code\":0}", ct).ConfigureAwait(false);
                 }
+                else if (path == "/api/browser/ufetch")
+                {
+                    // bundle 里对 c.y.qq.com 的 GET 也会被改写到这里（原 URL 在 query 里）
+                    await HandleBrowserUfetchAsync(stream, rawPath, string.Empty, ct).ConfigureAwait(false);
+                }
                 else if (path == "/api/library/search")
                 {
                     await HandleLibrarySearchAsync(stream, rawPath, ct).ConfigureAwait(false);
@@ -472,7 +477,7 @@ public sealed partial class WebPlaybackServer : IDisposable
                     }
                     else if (path == "/api/browser/ufetch")
                     {
-                        await HandleBrowserUfetchAsync(stream, bodyPart, ct).ConfigureAwait(false);
+                        await HandleBrowserUfetchAsync(stream, rawPath, bodyPart, ct).ConfigureAwait(false);
                     }
                     else if (path == "/api/action")
                     {

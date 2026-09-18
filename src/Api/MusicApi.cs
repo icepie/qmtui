@@ -33,6 +33,43 @@ public sealed partial class MusicApi
     }
 
     /// <summary>
+    /// 把网页 bundle 的原始请求转发到 QQ 网关（附带当前会话的 Cookie 鉴权），返回上游原始 JSON。
+    /// 供 /api/browser/ufetch 使用：原生页面靠它拿到真实数据。
+    /// </summary>
+    public static async Task<string?> ForwardToQqAsync(string url, bool useGet, string? body, CancellationToken ct = default)
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(useGet ? HttpMethod.Get : HttpMethod.Post, url);
+            var cookieHeader = UserSession.Current.GetCookieHeader();
+            if (!string.IsNullOrEmpty(cookieHeader))
+            {
+                req.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
+            }
+            req.Headers.TryAddWithoutValidation("Origin", "https://y.qq.com");
+
+            if (!useGet && !string.IsNullOrWhiteSpace(body))
+            {
+                req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+            }
+
+            using var resp = await s_httpClient.SendAsync(req, ct).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode)
+            {
+                AppLogger.Warn("MusicApi", $"ForwardToQqAsync 上游返回 {(int)resp.StatusCode}: {url}");
+                return null;
+            }
+
+            return await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("MusicApi", $"ForwardToQqAsync 失败 {url}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// 计算现代网关 zzc 签名
     /// </summary>
     public static string ComputeZzcSign(string text) => ComputeZzcSign(text, s_part1Indexes);

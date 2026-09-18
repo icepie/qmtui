@@ -11,18 +11,24 @@
   });
 
   // The Electron bundle starts network requests while it evaluates. Install this guard before
-  // loading that bundle so browser traffic never bypasses the authenticated C# API layer.
+  // loading that bundle so browser traffic never bypasses the authenticated C# API layer: the
+  // original URL and method travel with the rewritten request, so /api/browser/ufetch can
+  // forward it upstream with the session credentials and answer the playlist writes itself.
   const NativeXhr = window.XMLHttpRequest;
+  const QQ_TARGET = /^https:\/\/(?:u|c)\.y\.qq\.com\//i;
   class QmTuiXhr extends NativeXhr {
     open(method, url, ...args) {
-      this.__qmtuiBlocked = /^https:\/\/(?:u|c)\.y\.qq\.com\//i.test(String(url));
-      return super.open(method, this.__qmtuiBlocked ? '/api/browser/ufetch' : url, ...args);
+      const target = String(url);
+      this.__qmtuiBlocked = QQ_TARGET.test(target);
+      const proxied = this.__qmtuiBlocked
+        ? `/api/browser/ufetch?url=${encodeURIComponent(target)}&method=${encodeURIComponent(String(method))}`
+        : target;
+      return super.open(method, proxied, ...args);
     }
 
     send(body) {
-      // Keep the body so /api/browser/ufetch can route playlist mutations
-      // (addSongsToPlayList / createNewPlayList / deleteSongsFromPlayList) to
-      // the authenticated C# library backend instead of a blind {code:0} noop.
+      // Keep the body: the C# layer forwards it upstream and performs the playlist
+      // mutations it owns (createNewPlayList / addSongsToPlayList / deleteSongsFromPlayList).
       return super.send(body);
     }
   }
