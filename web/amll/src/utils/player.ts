@@ -441,3 +441,16 @@ export async function qmtuiSetQuality(tier: number): Promise<void> {
 		body: JSON.stringify({ tier }),
 	}).catch(() => undefined);
 }
+
+/** 音质档位 -> 下载接口的音质键（与 AudioQualityHelper / 旧前端一致）。 */
+export const QMTUI_QUALITY_KEYS: Record<number, string> = {
+	0: "hires",
+	1: "flac",
+	2: "320k",
+	3: "128k",
+	4: "master",
+	5: "deluxe",
+	6: "atmos51",
+	7: "atmos71",
+	8: "dolby",
+};
