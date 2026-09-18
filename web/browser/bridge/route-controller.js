@@ -14,12 +14,25 @@ export function createRouteController({
   renderSearchRoute,
   renderSingerRoute,
   renderSongCommentRoute,
+  renderUnavailablePage,
   resolveSong,
   showToast,
 }) {
   // 已交还给原生页面的路由：原生页自带主播电台 tab、行内 播放/添加到 按钮与虚拟滚动，
   // 数据经 ufetch 透传拿真实内容（见 WebPlaybackServer 的 /api/browser/ufetch）。
   const NATIVE_ROUTES = new Set(['/like']);
+
+  // 网页模式下无法提供数据的路由及原因。
+  const UNAVAILABLE_ROUTES = {
+    local: '本地音乐依赖桌面端的文件扫描能力（Electron），浏览器里拿不到本地目录。',
+    webdav: 'WebDAV 依赖桌面端连接（Electron），浏览器里无法直连你的 WebDAV 服务。',
+    toplist_detail: '这是一个 QQ 音乐的远端页面，网页模式下暂未实现。',
+    category_detail: '这是一个 QQ 音乐的远端页面，网页模式下暂未实现。',
+    mv_set: '这是一个 QQ 音乐的远端页面，网页模式下暂未实现。',
+    video: '这是一个 QQ 音乐的远端页面，网页模式下暂未实现。',
+    music_studio: '这是一个 QQ 音乐的远端页面，网页模式下暂未实现。',
+    batch_operation: '这是一个 QQ 音乐的远端页面，网页模式下暂未实现。',
+  };
 
   return function handleRoute() {
     const runtime = getRuntime();
@@ -147,6 +160,12 @@ export function createRouteController({
       }
       if (mid || id || name) setTimeout(() => renderSingerRoute({ mid, id, name }), 40);
       return;
+    }
+    // 其余路由在网页模式下没有可用数据源，明确说明而不是留白屏（这些页面在原生端要么是
+    // Electron 专属能力，要么是 QQ 音乐的远端 webview 页面）。
+    const unavailable = UNAVAILABLE_ROUTES[pathname.split('/')[1]];
+    if (unavailable) {
+      setTimeout(() => renderUnavailablePage(pathname.split('/')[1], unavailable), 40);
     }
     clearRouteHost();
   };

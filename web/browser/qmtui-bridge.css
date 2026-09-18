@@ -386,6 +386,21 @@ a.nav_item[href*="/webDav"] {
   font-size: 18px;
   font-weight: 600;
 }
+/* 网页模式下不可用的路由：说明页 */
+.qmtui-unavailable {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 24px;
+  text-align: center;
+}
+.qmtui-unavailable p {
+  margin: 0;
+  max-width: 520px;
+  line-height: 1.6;
+}
 .qmtui-card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));

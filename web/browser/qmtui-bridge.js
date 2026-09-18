@@ -1854,6 +1854,17 @@ import { state } from './bridge/state.js';
     else body.innerHTML = `<div class="qmtui-empty">${escapeHtml(emptyText)}</div>`;
   }
 
+  // 网页模式无法提供的页面：给出明确说明，避免点进去是白屏。
+  function renderUnavailablePage(route, reason) {
+    const page = renderPageShell('暂不可用', '', []);
+    if (!page) return;
+    const box = document.createElement('div');
+    box.className = 'qmtui-empty qmtui-unavailable';
+    box.innerHTML = `<p class="c_tx_normal">/${escapeHtml(route)} 在网页模式下暂不可用</p>
+      <p class="c_tx_thin">${escapeHtml(reason)}</p>`;
+    page.body.append(box);
+  }
+
   async function renderProfilePage() {
     const token = ++state.routeToken;
     const page = renderPageShell('个人主页', '', []);
@@ -2064,6 +2075,7 @@ import { state } from './bridge/state.js';
     renderSearchRoute,
     renderSingerRoute,
     renderSongCommentRoute,
+    renderUnavailablePage,
     showToast,
     resolveSong: () => (state.remote?.song ? toQqSong(state.remote.song) : null),
   });
