@@ -18,6 +18,8 @@ import { ExtensionInjectPoint } from "../../components/ExtensionInjectPoint/inde
 import { NewPlaylistButton } from "../../components/NewPlaylistButton/index.tsx";
 import { PageContainer } from "../../components/PageContainer/index.tsx";
 import { PlaylistCard } from "../../components/PlaylistCard/index.tsx";
+// qmtui 修改：每日推荐 / 猜你喜欢
+import { QmtuiRecommendations } from "../../components/QmtuiRecommendations/index.tsx";
 import { router } from "../../router.tsx";
 import { updateInfoAtom } from "../../states/appAtoms.ts";
 import { db } from "../../utils/db-client.ts";
@@ -173,6 +175,8 @@ export const Component: FC = () => {
 						<Trans i18nKey="page.main.loadingPlaylist">加载歌单中</Trans>
 					</Flex>
 				)}
+				{/* qmtui 修改：每日推荐 / 猜你喜欢 */}
+				<QmtuiRecommendations />
 				<ExtensionInjectPoint injectPointName="page.main.bottom" />
 			</Flex>
 		</PageContainer>
