@@ -1,0 +1,13 @@
+# 许可与来源说明
+
+本目录是 qmtui 的独立附加应用（“AMLL 风格歌词页”），通过 HTTP/WebSocket 与 qmtui 主程序通信，
+与 qmtui 本体（MIT，见仓库根 LICENSE）属于不同程序。
+
+它使用 AMLL（Apple Music-like Lyrics）作为歌词与背景渲染内核：
+
+- 上游：https://github.com/amll-dev/applemusic-like-lyrics
+- 许可：AGPL-3.0（全文见同目录 LICENSE）
+- 依赖：@applemusic-like-lyrics/core、@applemusic-like-lyrics/lyric
+
+因此**本目录下的源码同样以 AGPL-3.0 提供**（见 LICENSE）；其余 qmtui 代码仍为 MIT。
+如需再分发通过 HTTP 提供本页面，请一并提供本目录源码或上游源码链接。

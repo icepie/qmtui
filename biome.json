@@ -8,6 +8,8 @@
   "files": {
     "ignoreUnknown": true,
     "include": [
+      "web/amll/**/*.js",
+      "web/amll/**/*.css",
       "web/browser/**/*.js",
       "web/browser/**/*.css",
       "scripts/*.mjs",

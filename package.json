@@ -4,22 +4,28 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm typecheck && node scripts/build-web.mjs",
+    "build": "pnpm typecheck && pnpm web:build",
     "web:recover": "node scripts/recover-web.mjs",
-    "web:build": "node scripts/build-web.mjs",
+    "web:build": "node scripts/build-web.mjs && vite build --config web/amll/vite.config.mjs",
     "web:check": "node scripts/build-web.mjs --check",
-    "check": "biome check web/browser scripts tests/web",
-    "check:write": "biome check --write web/browser scripts tests/web",
+    "check": "biome check web/browser web/amll/src scripts tests/web",
+    "check:write": "biome check --write web/browser web/amll/src scripts tests/web",
     "lint": "biome lint web/browser scripts tests/web",
     "format": "biome format --write web/browser scripts tests/web",
     "typecheck": "tsc -p jsconfig.json",
     "test:web": "node --test tests/web/*.test.mjs",
-    "test:e2e": "node scripts/e2e-test.mjs"
+    "test:e2e": "node scripts/e2e-test.mjs",
+    "web:amll": "vite build --config web/amll/vite.config.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@playwright/test": "^1.63.0",
     "acorn": "8.15.0",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vite": "^5.4.21"
+  },
+  "dependencies": {
+    "@applemusic-like-lyrics/core": "0.5.2",
+    "@applemusic-like-lyrics/lyric": "1.0.2"
   }
 }

@@ -348,6 +348,24 @@ public sealed partial class WebPlaybackServer : IDisposable
                     string html = StaticResourceHelper.LoadStaticText("qqmusic/index.html");
                     await SendResponseAsync(stream, 200, "OK", "text/html; charset=utf-8", html, ct).ConfigureAwait(false);
                 }
+                else if (path == "/amll" || path == "/amll/" || path == "/amll/index.html")
+                {
+                    // 独立的 Apple Music 风格歌词页（AMLL 渲染内核），与主界面互不影响。
+                    string amll = StaticResourceHelper.LoadStaticText("amll/index.html");
+                    await SendResponseAsync(stream, 200, "OK", "text/html; charset=utf-8", amll, ct).ConfigureAwait(false);
+                }
+                else if (path.StartsWith("/amll/", StringComparison.Ordinal))
+                {
+                    byte[] content = StaticResourceHelper.LoadStaticBytes(path.TrimStart('/'));
+                    if (content.Length == 0)
+                    {
+                        await SendResponseAsync(stream, 404, "Not Found", "text/plain", "Not Found", ct).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await SendBinaryResponseAsync(stream, 200, "OK", GetStaticContentType(path), content, ct).ConfigureAwait(false);
+                    }
+                }
                 else if (path.StartsWith("/assets/", StringComparison.Ordinal) ||
                          path.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
                          path.EndsWith(".css", StringComparison.OrdinalIgnoreCase))

@@ -1,2 +1,4 @@
+# pnpm 10+/11 的构建脚本白名单（esbuild 需要 postinstall 落地二进制，biome 需要原生二进制）
 allowBuilds:
+  esbuild: true
   '@biomejs/biome': true

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>AMLL · qmtui</title>
+  </head>
+  <body>
+    <div id="bg" class="bg"></div>
+    <div class="stage">
+      <header class="meta">
+        <img id="cover" class="cover" alt="" />
+        <div class="titles">
+          <h1 id="title" class="title">未在播放</h1>
+          <p id="artist" class="artist"></p>
+        </div>
+      </header>
+      <main id="lyrics" class="lyrics"></main>
+      <footer class="bar">
+        <span id="pos" class="time">00:00</span>
+        <input id="seek" class="seek" type="range" min="0" max="1000" value="0" aria-label="播放进度" />
+        <span id="dur" class="time">00:00</span>
+        <div class="controls">
+          <button id="prev" class="ctl" type="button" aria-label="上一首">⏮</button>
+          <button id="toggle" class="ctl ctl--main" type="button" aria-label="播放/暂停">▶</button>
+          <button id="next" class="ctl" type="button" aria-label="下一首">⏭</button>
+        </div>
+      </footer>
+      <p class="notice">
+        歌词渲染由
+        <a href="https://github.com/amll-dev/applemusic-like-lyrics" target="_blank" rel="noreferrer">AMLL</a>
+        （AGPL-3.0）提供，其源码见上游仓库；本页面自身源码位于 qmtui 仓库的 <code>web/amll/</code>，同样以 AGPL-3.0 提供。
+      </p>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
