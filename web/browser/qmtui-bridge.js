@@ -777,6 +777,27 @@ import { state } from './bridge/state.js';
     }
   }
 
+  // 原生皮肤（霜茶白/玄潭黑）写在 #js_skin_style 里，我们的自建界面看不到它的类名，
+  // 所以把当前皮肤镜像到 :root[data-qmtui-skin]，供 qmtui-bridge.css 取色。
+  function watchSkin() {
+    const style = document.querySelector('#js_skin_style');
+    if (!style) {
+      setTimeout(watchSkin, 300);
+      return;
+    }
+    const apply = () => {
+      const css = style.textContent || '';
+      const light = css.includes('#f8f9fc') && !css.includes('#1e2028');
+      document.documentElement.dataset.qmtuiSkin = light ? 'light' : 'dark';
+    };
+    apply();
+    new MutationObserver(apply).observe(style, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+  }
+
   function showToast(message, error = false) {
     document.querySelector('.qmtui-toast')?.remove();
     const node = document.createElement('div');
@@ -2506,6 +2527,7 @@ import { state } from './bridge/state.js';
       return;
     }
     bindOriginalUi();
+    watchSkin();
     setupCoverLyricToggle();
     setupMobileSidebar();
     setupSettingsEntry();
