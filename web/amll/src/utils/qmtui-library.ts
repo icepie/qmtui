@@ -6,7 +6,8 @@
  *   create_playlist / delete_playlist / add_songs_to_playlist / remove_song_from_playlist
  * 其余命令（本地文件夹扫描、歌词库、任务栏等）一律安全空实现。
  *
- * 歌单与歌曲在首次使用时整体同步一次（本地接口，很快），之后走内存缓存。
+ * 歌单与歌曲在首次使用时整体同步一次，之后走内存缓存；快照还会存进
+ * localStorage（带 TTL），这样刷新页面不必重取整个曲库（1457 首要 12+ 次分页请求）。
  */
 
 type QmtuiSong = Record<string, unknown> & { mid?: string; id?: number };
@@ -40,6 +41,56 @@ const songs = new Map<string, LibSong>();
 const rawSongs = new Map<string, QmtuiSong>();
 const playlists = new Map<number, LibPlaylist>();
 let syncPromise: Promise<void> | null = null;
+
+// qmtui 修改：曲库快照跨页面复用，避免每次打开都全量同步
+const SNAPSHOT_KEY = "qmtui.library.snapshot";
+const SNAPSHOT_TTL_MS = 60_000;
+const SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
+
+function saveSnapshot(): void {
+	try {
+		const payload = JSON.stringify({
+			at: Date.now(),
+			songs: [...songs.entries()],
+			raw: [...rawSongs.entries()],
+			playlists: [...playlists.entries()],
+		});
+		// localStorage 一般只有 5MB，曲库过大时宁可不缓存也不要写坏
+		if (payload.length > SNAPSHOT_MAX_BYTES) return;
+		localStorage.setItem(SNAPSHOT_KEY, payload);
+	} catch (error) {
+		console.warn("[qmtui] 曲库快照保存失败", error);
+	}
+}
+
+function loadSnapshot(): boolean {
+	try {
+		const raw = localStorage.getItem(SNAPSHOT_KEY);
+		if (!raw) return false;
+		const data = JSON.parse(raw) as {
+			at?: number;
+			songs?: Array<[string, LibSong]>;
+			raw?: Array<[string, QmtuiSong]>;
+			playlists?: Array<[number, LibPlaylist]>;
+		};
+		if (!data?.at || Date.now() - data.at > SNAPSHOT_TTL_MS) return false;
+		for (const [key, value] of data.playlists ?? []) playlists.set(key, value);
+		for (const [key, value] of data.songs ?? []) songs.set(key, value);
+		for (const [key, value] of data.raw ?? []) rawSongs.set(key, value);
+		return playlists.size > 0;
+	} catch (error) {
+		console.warn("[qmtui] 曲库快照读取失败", error);
+		return false;
+	}
+}
+
+function dropSnapshot(): void {
+	try {
+		localStorage.removeItem(SNAPSHOT_KEY);
+	} catch {
+		// 忽略
+	}
+}
 
 const coverUrl = (song: QmtuiSong) => {
 	const albumMid = String(song.albumMid || "");
@@ -100,6 +151,11 @@ async function fetchPlaylistSongs(dirId: number, tid: number, isFav: boolean): P
 /** 同步歌单与其全部歌曲；重复调用复用同一次同步。 */
 export function syncQmtuiLibrary(): Promise<void> {
 	if (syncPromise) return syncPromise;
+	// 快照还新鲜就直接用，省掉整个曲库的同步请求
+	if (playlists.size === 0 && loadSnapshot()) {
+		syncPromise = Promise.resolve();
+		return syncPromise;
+	}
 	syncPromise = (async () => {
 		const data = await json("/api/library/playlists");
 		const list = (data.playlists as Array<Record<string, unknown>>) || [];
@@ -124,6 +180,7 @@ export function syncQmtuiLibrary(): Promise<void> {
 				songIds,
 			});
 		}
+		saveSnapshot();
 	})();
 	return syncPromise;
 }
@@ -189,6 +246,7 @@ export async function runQmtuiCommand(
 		case "create_playlist": {
 			await post("/api/library/playlist/create", { name: String(args?.name || "新建歌单") });
 			syncPromise = null;
+			dropSnapshot();
 			await syncQmtuiLibrary();
 			return [...playlists.values()].slice(-1)[0]?.id ?? 0;
 		}
