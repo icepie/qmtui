@@ -1,3 +1,5 @@
+using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using QmTui.Models;
@@ -22,6 +24,105 @@ public static partial class LyricParser
             return "";
         }
     }
+
+
+    // #region QRC（逐字歌词）
+
+    // QQ 音乐 QRC 的 3DES 密钥（24 字节，ECB，每 8 字节一块）
+
+    /// <summary>
+    /// 解密 QRC：十六进制密文 -&gt; 3DES/ECB 逐块解密 -&gt; zlib 解压。
+    /// </summary>
+    public static string DecryptQrc(string? hex) => QrcDes.DecryptQrc(hex);
+
+    /// <summary>QRC 内容被放在 XML 属性里，需要还原实体。</summary>
+    private static string UnescapeXml(string value) =>
+        value.Replace("&lt;", "<").Replace("&gt;", ">").Replace("&quot;", "\"")
+             .Replace("&apos;", "'").Replace("&amp;", "&");
+
+    private static readonly Regex s_qrcLineRegex =
+        new(@"(?<![\d\]])\s*\[(\d+),(\d+)\]([^\[]*)", RegexOptions.Compiled);
+
+    private static readonly Regex s_qrcWordRegex =
+        new(@"([^()]*)\((\d+),(\d+)\)", RegexOptions.Compiled);
+
+    /// <summary>
+    /// 解析 QRC 文本为带词级时间的歌词行。
+    /// 行格式：[行开始,行时长]词(开始,时长)词(开始,时长)…（时间单位毫秒）
+    /// </summary>
+    public static List<LyricLine> ParseQrc(string? qrcText)
+    {
+        var result = new List<LyricLine>();
+        if (string.IsNullOrWhiteSpace(qrcText)) return result;
+
+        foreach (Match lineMatch in s_qrcLineRegex.Matches(qrcText))
+        {
+            var lineStart = TimeSpan.FromMilliseconds(long.Parse(lineMatch.Groups[1].Value));
+            var lineDuration = TimeSpan.FromMilliseconds(long.Parse(lineMatch.Groups[2].Value));
+            var body = lineMatch.Groups[3].Value;
+
+            var words = new List<LyricWord>();
+            var text = new StringBuilder();
+            var firstStart = long.MaxValue;
+            foreach (Match wordMatch in s_qrcWordRegex.Matches(body))
+            {
+                var wordText = UnescapeXml(wordMatch.Groups[1].Value);
+                var start = long.Parse(wordMatch.Groups[2].Value);
+                var duration = long.Parse(wordMatch.Groups[3].Value);
+                firstStart = Math.Min(firstStart, start);
+                text.Append(wordText);
+                words.Add(new LyricWord(wordText, TimeSpan.FromMilliseconds(start), TimeSpan.FromMilliseconds(start + duration)));
+            }
+
+            var lineText = UnescapeXml(text.ToString());
+            if (string.IsNullOrWhiteSpace(lineText)) continue;
+
+            // QQ 的词时间通常是绝对毫秒；若明显是从 0 起的行内偏移，则换算成绝对时间。
+            if (words.Count > 0 && firstStart + 500 < lineStart.TotalMilliseconds)
+            {
+                for (int i = 0; i < words.Count; i++)
+                {
+                    words[i] = words[i] with
+                    {
+                        Start = lineStart + words[i].Start,
+                        End = lineStart + words[i].End,
+                    };
+                }
+            }
+
+            result.Add(new LyricLine(lineStart, lineText, "", words.Count > 0 ? words : null));
+        }
+
+        result.Sort((a, b) => a.Timestamp.CompareTo(b.Timestamp));
+        return result;
+    }
+
+    /// <summary>
+    /// 把翻译（LRC 文本）按时间戳贴到已解析的歌词行上。
+    /// </summary>
+    public static List<LyricLine> AttachTranslation(List<LyricLine> lines, string? transLrc)
+    {
+        if (lines.Count == 0 || string.IsNullOrWhiteSpace(transLrc)) return lines;
+        var trans = ParseLrc(transLrc);
+        if (trans.Count == 0) return lines;
+
+        var map = new Dictionary<long, string>(trans.Count);
+        foreach (var (timestamp, text) in trans)
+        {
+            map[(long)timestamp.TotalMilliseconds] = text;
+        }
+
+        for (int i = 0; i < lines.Count; i++)
+        {
+            if (map.TryGetValue((long)lines[i].Timestamp.TotalMilliseconds, out var text))
+            {
+                lines[i] = lines[i] with { Trans = text };
+            }
+        }
+        return lines;
+    }
+
+    // #endregion
 
     private static readonly char[] s_lineSeparators = ['\r', '\n'];
 

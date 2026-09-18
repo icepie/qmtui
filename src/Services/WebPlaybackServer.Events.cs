@@ -349,6 +349,18 @@ public sealed partial class WebPlaybackServer
                 sb.Append($"\"timeMs\":{(long)l.Timestamp.TotalMilliseconds},");
                 sb.Append($"\"text\":\"{EscapeJson(l.Text)}\",");
                 sb.Append($"\"trans\":\"{EscapeJson(l.Trans)}\"");
+                if (l.Words is { Count: > 0 })
+                {
+                    // 逐字歌词（KTV 效果）：每个词的起止时间
+                    sb.Append(",\"words\":[");
+                    for (int w = 0; w < l.Words.Count; w++)
+                    {
+                        if (w > 0) sb.Append(',');
+                        var word = l.Words[w];
+                        sb.Append($"{{\"text\":\"{EscapeJson(word.Text)}\",\"startMs\":{(long)word.Start.TotalMilliseconds},\"endMs\":{(long)word.End.TotalMilliseconds}}}");
+                    }
+                    sb.Append(']');
+                }
                 sb.Append('}');
             }
         }

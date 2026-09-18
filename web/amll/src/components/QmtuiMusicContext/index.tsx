@@ -57,11 +57,24 @@ const coverOf = (song: Record<string, unknown>) => {
 
 const toLyricLines = (lyrics: unknown) => {
 	const source = (Array.isArray(lyrics) ? lyrics : [])
-		.map((line) => ({
-			start: Number((line as Record<string, unknown>).timeMs) || 0,
-			text: String((line as Record<string, unknown>).text || ""),
-			trans: String((line as Record<string, unknown>).trans || ""),
-		}))
+		.map((line) => {
+			const raw = line as Record<string, unknown>;
+			// qmtui 修改：后端给了词级时间就按词拆，AMLL 会渲染逐字高亮
+			const rawWords = Array.isArray(raw.words) ? (raw.words as Record<string, unknown>[]) : [];
+			const words = rawWords
+				.map((word) => ({
+					word: String(word.text ?? ""),
+					startTime: Number(word.startMs) || 0,
+					endTime: Number(word.endMs) || 0,
+				}))
+				.filter((word) => word.word.length > 0);
+			return {
+				start: Number(raw.timeMs) || 0,
+				text: String(raw.text || ""),
+				trans: String(raw.trans || ""),
+				words,
+			};
+		})
 		.filter((line) => line.text.trim().length > 0);
 	const lines: Array<Record<string, unknown>> = [];
 	for (let i = 0; i < source.length; i++) {
@@ -69,7 +82,11 @@ const toLyricLines = (lyrics: unknown) => {
 		const end = i + 1 < source.length ? source[i + 1].start : start + 5000;
 		if (end <= start) continue;
 		lines.push({
-			words: [{ word: source[i].text, startTime: start, endTime: end }],
+			// 有词级时间就用它（逐字），否则整行一个字
+			words:
+				source[i].words.length > 0
+					? source[i].words
+					: [{ word: source[i].text, startTime: start, endTime: end }],
 			startTime: start,
 			endTime: end,
 			translatedLyric: source[i].trans || undefined,

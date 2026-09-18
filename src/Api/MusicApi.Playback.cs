@@ -353,6 +353,29 @@ public sealed partial class MusicApi
     /// <summary>
     /// 获取同步 LRC 歌词与翻译（解析 Base64 并进行双语时间轴对齐）
     /// </summary>
+/// <summary>
+    /// 调用 PlayLyricInfo，取回原始的 lyric/trans 字段（未解码）。
+    /// </summary>
+    private static async Task<(string Lyric, string Trans)> FetchLyricFieldsAsync(string songMid, int qrc, CancellationToken ct)
+    {
+        var jsonPayload = $"{{\"comm\":{{\"ct\":24,\"cv\":0}},\"playLyricInfo\":{{\"module\":\"music.musichallSong.PlayLyricInfo\",\"method\":\"GetPlayLyricInfo\",\"param\":{{\"songMID\":\"{songMid}\",\"songID\":0,\"qrc\":{qrc},\"trans\":1,\"roma\":1,\"isHQ\":1}}}}}}";
+        using var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+        using var resp = await s_httpClient.PostAsync("https://u.y.qq.com/cgi-bin/musicu.fcg", content, ct).ConfigureAwait(false);
+        var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.TryGetProperty("playLyricInfo", out var info) &&
+            info.TryGetProperty("data", out var data))
+        {
+            var lyric = data.TryGetProperty("lyric", out var l) ? l.GetString() : null;
+            var trans = data.TryGetProperty("trans", out var t) ? t.GetString() : null;
+            return (lyric ?? "", trans ?? "");
+        }
+        return ("", "");
+    }
+
+    /// <summary>
+    /// 获取指定歌曲的歌词（优先 QRC 逐字歌词，回退普通 LRC）。
+    /// </summary>
     public static async Task<List<LyricLine>> GetLyricsAsync(string songMid, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(songMid))
@@ -368,30 +391,30 @@ public sealed partial class MusicApi
 
         try
         {
-            // 1. 调用 PlayLyricInfo 接口以获取原生原文与翻译歌词
-            var jsonPayload = $"{{\"comm\":{{\"ct\":24,\"cv\":0}},\"playLyricInfo\":{{\"module\":\"music.musichallSong.PlayLyricInfo\",\"method\":\"GetPlayLyricInfo\",\"param\":{{\"songMID\":\"{songMid}\",\"songID\":0,\"qrc\":0,\"trans\":1,\"roma\":1,\"isHQ\":1}}}}}}";
-
-            using var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-            using var resp = await s_httpClient.PostAsync("https://u.y.qq.com/cgi-bin/musicu.fcg", content, ct).ConfigureAwait(false);
-            var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            if (root.TryGetProperty("playLyricInfo", out var info) &&
-                info.TryGetProperty("data", out var data))
+            // 1. 先请求 QRC（qrc:1 时 lyric 字段是十六进制密文），拿到逐字歌词
+            var (qrcField, qrcTransField) = await FetchLyricFieldsAsync(songMid, qrc: 1, ct).ConfigureAwait(false);
+            var qrcText = LyricParser.DecryptQrc(qrcField);
+            if (!string.IsNullOrWhiteSpace(qrcText))
             {
-                var b64Lyric = data.TryGetProperty("lyric", out var l) ? l.GetString() : null;
-                var b64Trans = data.TryGetProperty("trans", out var t) ? t.GetString() : null;
-
-                var rawLyric = LyricParser.DecodeBase64(b64Lyric);
-                var rawTrans = LyricParser.DecodeBase64(b64Trans);
-
-                if (!string.IsNullOrWhiteSpace(rawLyric))
+                var qrcLines = LyricParser.AttachTranslation(
+                    LyricParser.ParseQrc(qrcText),
+                    LyricParser.DecodeBase64(qrcTransField));
+                if (qrcLines.Count > 0 && qrcLines.Any(line => line.Words is { Count: > 0 }))
                 {
-                    var merged = LyricParser.MergeLyrics(rawLyric, rawTrans);
-                    MetadataCacheService.SaveLyrics(songMid, merged);
-                    return merged;
+                    MetadataCacheService.SaveLyrics(songMid, qrcLines);
+                    return qrcLines;
                 }
+            }
+
+            // 2. 回退：普通 LRC（qrc:0 时 lyric 字段是 base64 的 LRC 文本）
+            var (lyricField, transField) = await FetchLyricFieldsAsync(songMid, qrc: 0, ct).ConfigureAwait(false);
+            var rawLyric = LyricParser.DecodeBase64(lyricField);
+            var rawTrans = LyricParser.DecodeBase64(transField);
+            if (!string.IsNullOrWhiteSpace(rawLyric) && LyricParser.ParseLrc(rawLyric).Count > 0)
+            {
+                var merged = LyricParser.MergeLyrics(rawLyric, rawTrans);
+                MetadataCacheService.SaveLyrics(songMid, merged);
+                return merged;
             }
         }
         catch (Exception ex)

@@ -27,4 +27,7 @@ public record Song(
     public List<ArtistInfo> Singers { get; set; } = [];
 }
 
-public record LyricLine(TimeSpan Timestamp, string Text, string Trans = "");
+/// <summary>逐字歌词中的一个词（含起止时间，用于 KTV 效果）</summary>
+public record LyricWord(string Text, TimeSpan Start, TimeSpan End);
+
+public record LyricLine(TimeSpan Timestamp, string Text, string Trans = "", List<LyricWord>? Words = null);

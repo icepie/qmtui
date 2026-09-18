@@ -75,3 +75,32 @@ public class MetadataCacheServiceTests
         Assert.Equal(TimeSpan.FromSeconds(15), cached[1].Timestamp);
     }
 }
+
+public class LyricWordSerializationTests
+{
+    [Fact]
+    public void LyricsWithWords_RoundTripThroughJsonContext()
+    {
+        var lines = new List<QmTui.Models.LyricLine>
+        {
+            new(TimeSpan.FromMilliseconds(729), "Lyrics by：John Lennon", "译文",
+                [
+                    new QmTui.Models.LyricWord("Lyrics ", TimeSpan.FromMilliseconds(729), TimeSpan.FromMilliseconds(881)),
+                    new QmTui.Models.LyricWord("by：", TimeSpan.FromMilliseconds(881), TimeSpan.FromMilliseconds(1015)),
+                ]),
+            new(TimeSpan.FromMilliseconds(1319), "Composed by：John Lennon"),
+        };
+
+        var json = System.Text.Json.JsonSerializer.Serialize(lines, QmTui.Utils.AppJsonContext.Default.ListLyricLine);
+        Assert.Contains("\"Words\"", json);
+
+        var back = System.Text.Json.JsonSerializer.Deserialize(json, QmTui.Utils.AppJsonContext.Default.ListLyricLine);
+        Assert.NotNull(back);
+        Assert.NotNull(back![0].Words);
+        Assert.Equal(2, back[0].Words!.Count);
+        Assert.Equal("Lyrics ", back[0].Words![0].Text);
+        Assert.Equal(729, (long)back[0].Words![0].Start.TotalMilliseconds);
+        Assert.Equal("译文", back[0].Trans);
+        Assert.Null(back[1].Words);
+    }
+}
