@@ -1899,6 +1899,31 @@ import { state } from './bridge/state.js';
     page.body.append(box);
   }
 
+  // 本地音乐：曲库来自 CLI 配置的文件夹（LocalMusicService 扫描缓存），播放同样交给
+  // CLI（浏览器只是遥控器），所以这里只做列表。
+  async function renderLocalMusicPage() {
+    const token = ++state.routeToken;
+    const page = renderPageShell('本地音乐', '来自 CLI 里配置的本地文件夹', ['歌曲']);
+    if (!page) return;
+    clearRenderedContent(page.body);
+    page.body.innerHTML = '<div class="qmtui-loading">正在加载本地曲库…</div>';
+    try {
+      const result = await api('/api/library/local');
+      if (token !== state.routeToken) return;
+      const songs = result.songs || [];
+      if (!songs.length) {
+        page.body.innerHTML =
+          '<div class="qmtui-empty">本地曲库为空：先在 CLI 的「本地音乐」里添加文件夹并扫描，这里就会出现曲目。</div>';
+        return;
+      }
+      renderPageSongs(page.body, songs, '本地曲库为空');
+      const meta = page.host.querySelector('.qmtui-page__head p');
+      if (meta) meta.textContent = `共 ${songs.length} 首 · 播放由 CLI 输出`;
+    } catch (error) {
+      page.body.innerHTML = `<div class="qmtui-empty">${escapeHtml(error.message)}</div>`;
+    }
+  }
+
   async function renderProfilePage() {
     const token = ++state.routeToken;
     const page = renderPageShell('个人主页', '', []);
@@ -2102,6 +2127,7 @@ import { state } from './bridge/state.js';
     clearRouteHost,
     getRuntime,
     renderAlbumRoute,
+    renderLocalMusicPage,
     renderMusicHallPage,
     renderPlaylistRoute,
     renderProfilePage,

@@ -311,12 +311,40 @@ public sealed partial class WebPlaybackServer
             return;
         }
 
+        // 本地曲库里的歌只有扫描时生成的 mid，没有 QQ 播放地址，播放前必须换成带
+        // LocalFilePath 的缓存对象（在浏览器里点「本地音乐」的就是这种情况）。
+        var song = ResolveLocalSong(request.Song);
         var context = request.Context ?? [];
-        if (context.Count == 0) context.Add(request.Song);
-        else if (!context.Any(song => IsSameSong(song, request.Song))) context.Insert(0, request.Song);
+        if (context.Count == 0)
+        {
+            context.Add(song);
+        }
+        else
+        {
+            for (int i = 0; i < context.Count; i++) context[i] = ResolveLocalSong(context[i]);
+            if (!context.Any(item => IsSameSong(item, song))) context.Insert(0, song);
+        }
 
-        LibraryPlayRequested?.Invoke(new WebLibraryPlayRequest(request.Song, context));
+        LibraryPlayRequested?.Invoke(new WebLibraryPlayRequest(song, context));
         await SendResponseAsync(stream, 202, "Accepted", "application/json", "{\"ok\":true}", ct).ConfigureAwait(false);
+    }
+
+    /// <summary>命中本地曲库（按 mid 或 id）时返回缓存歌曲，否则原样返回。</summary>
+    private static Song ResolveLocalSong(Song song)
+    {
+        foreach (var local in LocalMusicService.GetCachedSongs())
+        {
+            if (!string.IsNullOrEmpty(song.Mid) && string.Equals(local.Mid, song.Mid, StringComparison.Ordinal)) return local;
+            if (song.Id > 0 && local.Id == song.Id) return local;
+        }
+        return song;
+    }
+
+    private static Task HandleLibraryLocalSongsAsync(NetworkStream stream, CancellationToken ct)
+    {
+        // 本地曲库与账号无关，不需要登录态。
+        var songs = LocalMusicService.GetCachedSongs();
+        return SendLibraryJsonAsync(stream, new WebLibrarySongsResponse("本地音乐", 1, songs, false, songs.Count), ct);
     }
 
     private static async Task HandleCreatePlaylistAsync(NetworkStream stream, string body, CancellationToken ct)

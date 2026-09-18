@@ -7,6 +7,7 @@ export function createRouteController({
   clearRouteHost,
   getRuntime,
   renderAlbumRoute,
+  renderLocalMusicPage,
   renderMusicHallPage,
   renderPlaylistRoute,
   renderProfilePage,
@@ -24,7 +25,6 @@ export function createRouteController({
 
   // 网页模式下无法提供数据的路由及原因。
   const UNAVAILABLE_ROUTES = {
-    local: '本地音乐依赖桌面端的文件扫描能力（Electron），浏览器里拿不到本地目录。',
     webdav: 'WebDAV 依赖桌面端连接（Electron），浏览器里无法直连你的 WebDAV 服务。',
     toplist_detail: '这是一个 QQ 音乐的远端页面，网页模式下暂未实现。',
     category_detail: '这是一个 QQ 音乐的远端页面，网页模式下暂未实现。',
@@ -50,6 +50,10 @@ export function createRouteController({
 
     if (pathname === '/recommend') {
       setTimeout(renderRecommendPage, 40);
+      return;
+    }
+    if (pathname === '/local') {
+      setTimeout(() => renderLocalMusicPage(), 40);
       return;
     }
     if (pathname === '/musicroom') {

@@ -430,6 +430,10 @@ public sealed partial class WebPlaybackServer : IDisposable
                 {
                     await HandleLibraryPlaylistsAsync(stream, ct).ConfigureAwait(false);
                 }
+                else if (path == "/api/library/local")
+                {
+                    await HandleLibraryLocalSongsAsync(stream, ct).ConfigureAwait(false);
+                }
                 else if (path == "/api/library/playlist")
                 {
                     await HandleLibraryPlaylistAsync(stream, rawPath, ct).ConfigureAwait(false);
