@@ -19,6 +19,7 @@ import { NewPlaylistButton } from "../../components/NewPlaylistButton/index.tsx"
 import { PageContainer } from "../../components/PageContainer/index.tsx";
 import { PlaylistCard } from "../../components/PlaylistCard/index.tsx";
 // qmtui 修改：每日推荐 / 猜你喜欢
+import { QmtuiFavoriteAlbums } from "../../components/QmtuiFavoriteAlbums/index.tsx";
 import { QmtuiRecommendations } from "../../components/QmtuiRecommendations/index.tsx";
 import { router } from "../../router.tsx";
 import { updateInfoAtom } from "../../states/appAtoms.ts";
@@ -180,6 +181,8 @@ export const Component: FC = () => {
 			{/* qmtui 修改：每日推荐 / 猜你喜欢（放在高度 100% 的网格容器之外，
 			    否则会把它挤成 0 高，歌单网格就不显示了） */}
 			<QmtuiRecommendations />
+			{/* qmtui 修改：收藏的专辑 */}
+			<QmtuiFavoriteAlbums />
 		</PageContainer>
 	);
 };
