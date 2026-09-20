@@ -1,4 +1,4 @@
-import { HamburgerMenuIcon, MagnifyingGlassIcon } from "@radix-ui/react-icons";
+import { HamburgerMenuIcon, MagnifyingGlassIcon, PersonIcon } from "@radix-ui/react-icons";
 import {
 	Badge,
 	Box,
@@ -72,6 +72,12 @@ export const Component: FC = () => {
 						<IconButton variant="soft" asChild>
 							<Link to="/search">
 								<MagnifyingGlassIcon />
+							</Link>
+						</IconButton>
+						{/* qmtui 修改：个人主页入口 */}
+						<IconButton variant="soft" asChild>
+							<Link to="/account">
+								<PersonIcon />
 							</Link>
 						</IconButton>
 						<NewPlaylistButton />
