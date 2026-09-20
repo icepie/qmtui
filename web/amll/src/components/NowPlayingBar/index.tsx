@@ -10,8 +10,6 @@ import {
 	onRequestPrevSongAtom,
 	TextMarquee,
 } from "@applemusic-like-lyrics/react-full";
-import lyricIcon from "@iconify/icons-ic/round-lyrics";
-import { Icon } from "@iconify/react";
 import {
 	ListBulletIcon,
 	PauseIcon,
@@ -24,6 +22,8 @@ import classNames from "classnames";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { type FC, useLayoutEffect, useRef } from "react";
 import IconForward from "../../assets/icon_forward.svg?react";
+// qmtui 修改：Iconify 的歌词图标在这个构建里没渲染出来（画出了字面量 undefined），改用本地图标
+import IconLyrics from "../../assets/icon_lyrics.svg?react";
 import IconPause from "../../assets/icon_pause.svg?react";
 import IconPlay from "../../assets/icon_play.svg?react";
 import IconRewind from "../../assets/icon_rewind.svg?react";
@@ -114,7 +114,7 @@ export const NowPlayingBar: FC = () => {
 						onClick={() => setLyricPageOpened(true)}
 					>
 						<div className={styles.lyricIconButton}>
-							<Icon width={34} icon={lyricIcon} className="icon" />
+							<IconLyrics width={34} height={34} />
 						</div>
 					</button>
 					<Flex
