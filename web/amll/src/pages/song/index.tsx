@@ -81,7 +81,8 @@ export const Component: FC = () => {
 						<Tabs.Trigger value="basic">
 							<Trans i18nKey="page.song.basic.tabs.basic">基本</Trans>
 						</Tabs.Trigger>
-						<Tabs.Trigger value="metadata">
+						{/* qmtui 修改：元数据页编辑的是本地文件元数据，网页端保存无效，去掉 */}
+						<Tabs.Trigger value="metadata" style={{ display: "none" }}>
 							<Trans i18nKey="page.song.basic.tabs.metadata">元数据</Trans>
 						</Tabs.Trigger>
 						<Tabs.Trigger value="lyric">
@@ -94,7 +95,7 @@ export const Component: FC = () => {
 						<Tabs.Content value="basic">
 							<BasicTabContent />
 						</Tabs.Content>
-						<Tabs.Content value="metadata">
+						<Tabs.Content value="metadata" style={{ display: "none" }}>
 							<MetadataTabContent />
 						</Tabs.Content>
 						<Tabs.Content value="lyric">
