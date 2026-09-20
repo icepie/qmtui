@@ -174,19 +174,11 @@ export const QmtuiMusicContext: FC = () => {
 
 		// 专辑图上方那条控制横条：框架文档说明「通常用于关闭歌词页面」，但它的
 		// onClickControlThumb 回调在浏览器里不触发，这里直接监听点击。
-		// AirPlay 在网页端无能力，隐藏它（React 重建后会再次应用）
-		const hideAirPlay = () => {
-			const buttons = Array.from(document.querySelectorAll('[class*="toggleIconButton"]'));
-			const airplay = buttons[buttons.length - 2] as HTMLElement | undefined;
-			if (airplay && airplay.style.display !== "none") airplay.style.display = "none";
-		};
-
 		const onDocumentClick = (event: MouseEvent) => {
 			const target = event.target instanceof Element ? event.target : null;
 			if (!target) return;
-			// qmtui 修改：框架底部那排按钮里，Playlist 没接回调、AirPlay 在浏览器里无意义，
-			// 歌曲信息上的 ⋯ 也没接。这里按 DOM 顺序接管：Playlist 打开队列面板，
-			// AirPlay 屏蔽，⋯ 打开歌曲详情页。
+			// qmtui 修改：框架底部那排按钮里，最后一个 Playlist 没有回调，这里把它接到队列面板。
+			// AirPlay 在浏览器里没有对应能力，但保留按钮作为装饰（框架本就没给回调，点了也没副作用）。
 			const toggleButtons = Array.from(
 				document.querySelectorAll('[class*="toggleIconButton"]'),
 			);
@@ -197,12 +189,6 @@ export const QmtuiMusicContext: FC = () => {
 					event.preventDefault();
 					event.stopPropagation();
 					store.set(playlistCardOpenedAtom, true);
-					return;
-				}
-				if (index === toggleButtons.length - 2) {
-					// AirPlay：网页端没有对应能力，直接吞掉
-					event.preventDefault();
-					event.stopPropagation();
 					return;
 				}
 			}
@@ -251,7 +237,6 @@ export const QmtuiMusicContext: FC = () => {
 
 		const unlisten = listenQmtuiFrames((frame) => {
 			enableLyricLineClick(performance.now());
-			hideAirPlay();
 			// qmtui 修改：用 CLI 的队列填充管理器（只填一次），供播放列表面板与
 			// 右键菜单的「播放」「下一首播放」使用；CLI 仍是唯一的播放方，
 			// 所以只写内部列表，不调用会触发播放的 setQueue。
