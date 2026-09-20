@@ -10,6 +10,26 @@ qmtui --web
 
 `--no-audio` 会跳过本地 GStreamer，并启动无音频输出的 Web 会话；主要用于无音频设备环境和自动化验证。
 
+## AMLL 播放器前端（`/amll`）
+
+除上面那套界面外，`--web` 还会在 `/amll/` 提供另一个前端：它基于 Apple Music-like Lyrics Player，源码在 `web/amll/`（Vite + React），通过 `web/amll/src/components/QmtuiMusicContext/` 接到 CLI 的状态帧与 HTTP 接口上——歌词、播放位置、音质、队列都由 CLI 提供，界面只负责显示与下发操作。
+
+与 CLI 的能力对齐情况：曲库（我喜欢／自建／收藏的歌单、专辑、歌手）、云端搜索（歌曲／歌手／歌单／专辑）、歌手页、专辑页、歌曲页（音质选择、下载、评论、歌手与专辑入口）、每日推荐与猜你喜欢、收藏歌单／歌曲／歌手／专辑、播放队列面板（含封面）、点击歌词定位、逐字歌词（QRC）、音量、全屏、个人主页。桌面端专有的入口（本地文件夹、任务栏歌词、窗口置顶、截图与捕获、扩展管理、音频设备）在这个前端里不会出现。
+
+构建产物直接写到 `www/amll/`（该目录提交被忽略）：
+
+```bash
+cd web/amll
+pnpm install
+pnpm build
+```
+
+`www/amll/` 只是源码树里的产物，运行时用的是随二进制发布的副本，因此改完还要重新发布：
+
+```bash
+dotnet publish -c Release -r linux-x64 QmTui.csproj
+```
+
 ## 前端开发与构建
 
 前端的唯一源码入口为 `web/`：`web/browser/` 是手工维护的页面与桥接模块，`web/recovered/` 是从现有发行包恢复的可编辑、可重建模块，`web/assets/` 保存静态资源。恢复模块是**已转译的 JavaScript，并非原始 TypeScript/TSX 源码**，重建仍保留 webpack 运行时。
