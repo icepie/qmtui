@@ -35,10 +35,11 @@ import {
 	qmtuiLyricTimeOf,
 	qmtuiQualityAtom,
 	setQmtuiLibraryLookup,
+	setQmtuiQueueProvider,
 } from "../../utils/player.ts";
 // qmtui 修改：播放队列（右键「播放」「下一首播放」与播放列表面板都依赖它）
 import { playlistCardOpenedAtom, queueManagerAtom } from "../../states/appAtoms.ts";
-import { PlayQueueManager } from "../../utils/play-queue-manager.ts";
+import { PlayQueueManager, queuePlaylistAtom } from "../../utils/play-queue-manager.ts";
 import { rawQmtuiSong } from "../../utils/qmtui-library.ts";
 
 const post = (path: string, body?: unknown) =>
@@ -220,6 +221,13 @@ export const QmtuiMusicContext: FC = () => {
 
 		const queueManager = new PlayQueueManager(store);
 		store.set(queueManagerAtom, queueManager);
+		// qmtui 修改：把队列管理器里的真队列交给播放桥（随机播放要在这个范围内随机）
+		setQmtuiQueueProvider(() =>
+			store
+				.get(queuePlaylistAtom)
+				.map((song) => rawQmtuiSong(String(song.id)))
+				.filter((song): song is Record<string, unknown> => Boolean(song)),
+		);
 		const queueSignatureRef = { current: "" };
 
 		// qmtui 修改：AMLL 内核默认不响应歌词行点击，打开后才会发出 lyricLineClick

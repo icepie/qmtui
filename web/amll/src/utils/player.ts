@@ -347,6 +347,14 @@ function initQmtuiBridge() {
 }
 
 let qmtuiLibraryLookup: ((id: string) => Record<string, unknown> | undefined) | null = null;
+// qmtui 修改：当前播放队列由上下文提供（队列管理器里的真队列），
+// 播放时作为 CLI 的队列上下文——否则随机播放会在整个曲库里随机。
+let qmtuiQueueProvider: (() => Array<Record<string, unknown>>) | null = null;
+
+export function setQmtuiQueueProvider(provider: (() => Array<Record<string, unknown>>) | null) {
+	qmtuiQueueProvider = provider;
+}
+
 export function setQmtuiLibraryLookup(lookup: (id: string) => Record<string, unknown> | undefined) {
 	qmtuiLibraryLookup = lookup;
 }
@@ -374,7 +382,17 @@ async function qmtuiSendMessage(type: string, data?: Record<string, unknown>): P
 			if (fromLibrary) qmtuiSongs.set(songKey, fromLibrary);
 			const cached = qmtuiSongs.get(songKey);
 			if (cached) {
-				await qmtuiPost("/api/library/play", { song: cached, context: [...qmtuiSongs.values()] });
+				// 队列上下文：优先用真实队列（歌单/搜索的结果集），拿不到才退回已知歌曲
+				const queue = qmtuiQueueProvider?.() ?? [];
+				const context =
+					queue.length > 0 ? [...queue] : [...qmtuiSongs.values()];
+				const hasCurrent = context.some(
+					(item) =>
+						String(item.id) === String(cached.id) ||
+						(cached.mid && String(item.mid) === String(cached.mid)),
+				);
+				if (!hasCurrent) context.unshift(cached);
+				await qmtuiPost("/api/library/play", { song: cached, context });
 			}
 			break;
 		}
