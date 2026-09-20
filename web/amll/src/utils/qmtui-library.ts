@@ -95,8 +95,11 @@ function dropSnapshot(): void {
 const coverUrl = (song: QmtuiSong) => {
 	const albumMid = String(song.albumMid || "");
 	const mid = String(song.mid || "");
-	if (!albumMid && !mid) return null;
-	return `/cover?mid=${encodeURIComponent(mid)}&albumMid=${encodeURIComponent(albumMid)}&size=300`;
+	// qmtui 修改：优先用 QQ CDN 的 300x300 小图（约 20KB），
+	// 的 /cover 代理会返回 1200x1200 原图（1.6MB），整页几十行封面时非常慢。
+	if (albumMid) return `https://y.qq.com/music/photo_new/T002R300x300M000${albumMid}.jpg`;
+	if (mid) return `/cover?mid=${encodeURIComponent(mid)}&albumMid=&size=300`;
+	return null;
 };
 
 function toLibSong(song: QmtuiSong): LibSong {

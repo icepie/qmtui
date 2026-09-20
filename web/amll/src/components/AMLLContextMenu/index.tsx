@@ -7,22 +7,14 @@ import {
 	onRequestPrevSongAtom,
 } from "@applemusic-like-lyrics/react-full";
 import { ContextMenu } from "@radix-ui/themes";
-import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import type { FC } from "react";
 import { Trans } from "react-i18next";
 import { router } from "../../router.tsx";
-import {
-	enableAlwaysOnTopAtom,
-	recordPanelOpenedAtom,
-} from "../../states/appAtoms.ts";
 
 export const AMLLContextMenuContent: FC = () => {
 	const [hideLyricView, setHideLyricView] = useAtom(hideLyricViewAtom);
-	const [alwaysOnTop, setAlwaysOnTop] = useAtom(enableAlwaysOnTopAtom);
 	const setLyricPageOpened = useSetAtom(isLyricPageOpenedAtom);
-	const setRecordPanelOpened = useSetAtom(recordPanelOpenedAtom);
 	const onRequestPrevSong = useAtomValue(onRequestPrevSongAtom).onEmit;
 	const onRequestNextSong = useAtomValue(onRequestNextSongAtom).onEmit;
 	const onPlayOrResume = useAtomValue(onPlayOrResumeAtom).onEmit;
@@ -40,24 +32,21 @@ export const AMLLContextMenuContent: FC = () => {
 				<Trans i18nKey="amll.contextMenu.forwardSong">下一首</Trans>
 			</ContextMenu.Item>
 			<ContextMenu.Separator />
+			{/* qmtui 修改：网页端没有 Tauri 窗口，全屏改用浏览器原生 API（窗口置顶无对应能力，去掉） */}
 			<ContextMenu.Item
 				onClick={async () => {
-					const win = getCurrentWindow();
-					const isFullscreen = await win.isFullscreen();
-					setSystemTitlebarFullscreen(!isFullscreen);
-					await win.setFullscreen(!isFullscreen);
+					if (document.fullscreenElement) {
+						await document.exitFullscreen().catch(() => undefined);
+					} else {
+						await document.documentElement.requestFullscreen().catch(() => undefined);
+					}
+					setSystemTitlebarFullscreen(Boolean(document.fullscreenElement));
 				}}
 			>
 				<Trans i18nKey="amll.contextMenu.toggleFullscreen">
 					全屏 / 取消全屏
 				</Trans>
 			</ContextMenu.Item>
-			<ContextMenu.CheckboxItem
-				checked={alwaysOnTop}
-				onCheckedChange={(e) => setAlwaysOnTop(!!e)}
-			>
-				<Trans i18nKey="amll.contextMenu.windowAlwaysOnTop">窗口置顶</Trans>
-			</ContextMenu.CheckboxItem>
 			<ContextMenu.Separator />
 			<ContextMenu.CheckboxItem
 				checked={!hideLyricView}
@@ -75,23 +64,7 @@ export const AMLLContextMenuContent: FC = () => {
 					编辑歌曲覆盖信息
 				</Trans>
 			</ContextMenu.Item>
-			<ContextMenu.Separator />
-			<ContextMenu.Item
-				onClick={() => {
-					setRecordPanelOpened(true);
-				}}
-			>
-				<Trans i18nKey="amll.contextMenu.openRecorder">打开捕获面板</Trans>
-			</ContextMenu.Item>
-			<ContextMenu.Item
-				onClick={() => {
-					invoke("open_screenshot_window");
-				}}
-			>
-				<Trans i18nKey="amll.contextMenu.openScreenshotTool">
-					打开截图工具
-				</Trans>
-			</ContextMenu.Item>
+			{/* qmtui 修改：捕获面板与截图工具依赖桌面端能力，网页端去掉 */}
 			<ContextMenu.Separator />
 			<ContextMenu.Item
 				onClick={() => {
