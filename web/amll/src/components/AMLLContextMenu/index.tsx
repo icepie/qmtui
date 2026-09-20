@@ -11,6 +11,8 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import type { FC } from "react";
 import { Trans } from "react-i18next";
 import { router } from "../../router.tsx";
+// qmtui 修改：把「加入队列 / 下一首播放」接到 CLI 的真实队列
+import { rawQmtuiSong } from "../../utils/qmtui-library.ts";
 
 export const AMLLContextMenuContent: FC = () => {
 	const [hideLyricView, setHideLyricView] = useAtom(hideLyricViewAtom);
@@ -63,6 +65,33 @@ export const AMLLContextMenuContent: FC = () => {
 				<Trans i18nKey="amll.contextMenu.editMusicOverrideMessage">
 					编辑歌曲覆盖信息
 				</Trans>
+			</ContextMenu.Item>
+			{/* qmtui 修改：网页端的队列只是镜像，这里直接写 CLI 的队列 */}
+			<ContextMenu.Item
+				onClick={() => {
+					const raw = rawQmtuiSong(String(musicId));
+					if (!raw) return;
+					void fetch("/api/queue/add", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ song: raw, next: false }),
+					});
+				}}
+			>
+				加入播放队列
+			</ContextMenu.Item>
+			<ContextMenu.Item
+				onClick={() => {
+					const raw = rawQmtuiSong(String(musicId));
+					if (!raw) return;
+					void fetch("/api/queue/add", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ song: raw, next: true }),
+					});
+				}}
+			>
+				下一首播放
 			</ContextMenu.Item>
 			{/* qmtui 修改：捕获面板与截图工具依赖桌面端能力，网页端去掉 */}
 			<ContextMenu.Separator />
