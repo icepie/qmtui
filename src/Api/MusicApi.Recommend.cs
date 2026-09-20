@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using QmTui.Models;
+using QmTui.Services;
 using QmTui.Utils;
 
 namespace QmTui.Api;
@@ -15,6 +16,16 @@ public sealed partial class MusicApi
         await LoginService.EnsureMusicKeyAsync(ct).ConfigureAwait(false);
 
         var uin = UserSession.Current.Uin;
+
+        // 「每日30首」一天内不会变，命中缓存就不必再走 QQ 的多次往返（要十几秒）
+        var cacheDate = DateTime.Now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+        var cached = MetadataCacheService.GetDailyRecommend(uin, cacheDate);
+        if (cached is { Songs.Count: > 0 })
+        {
+            AppLogger.Info("MusicApi", $"GetDailyRecommendSongsAsync: hit cache for {cacheDate}");
+            return cached.Songs;
+        }
+
         var url = "https://u.y.qq.com/cgi-bin/musicu.fcg";
 
         try
@@ -115,6 +126,7 @@ public sealed partial class MusicApi
                         if (song != null) list.Add(song);
                     }
                     AppLogger.Info("MusicApi", $"GetDailyRecommendSongsAsync: fetched {list.Count} songs for 每日30首");
+                    MetadataCacheService.SaveDailyRecommend(uin, cacheDate, list);
                     return list;
                 }
 

@@ -37,6 +37,16 @@ const EMPTY_PERSISTED_STATE: PersistedQueueState = {
 };
 
 /** 持久化存储 atom（localStorage） */
+// qmtui 修改：网页端的队列只是 CLI 队列的镜像，本地变更必须同步回 CLI，
+// 否则播放列表面板（跟着 CLI 的队列走）会和实际不一致。
+let qmtuiQueueAddHook: ((song: Song, next: boolean) => void) | null = null;
+
+export const setQmtuiQueueAddHook = (
+	hook: ((song: Song, next: boolean) => void) | null,
+) => {
+	qmtuiQueueAddHook = hook;
+};
+
 export const persistedQueueStateAtom = atomWithStorage<PersistedQueueState>(
 	"amll-player.playQueue",
 	EMPTY_PERSISTED_STATE,

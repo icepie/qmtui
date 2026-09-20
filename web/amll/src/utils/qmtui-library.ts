@@ -136,14 +136,51 @@ const post = async (path: string, body?: unknown): Promise<void> => {
 	});
 };
 
-async function fetchPlaylistSongs(dirId: number, tid: number, isFav: boolean): Promise<LibSong[]> {
-	const collected: LibSong[] = [];
-	for (let page = 1; page <= 40; page++) {
-		const query = `dirId=${dirId}&tid=${tid}&isFav=${isFav}&page=${page}`;
-		const data = await json(`/api/library/playlist?${query}`);
-		const list = (data.songs as QmtuiSong[]) || [];
-		for (const song of list) collected.push(toLibSong(song));
-		if (!data.hasMore || list.length === 0) break;
+/** 并发上限内按序执行（本地接口很快，但别一次打太多）。 */
+async function mapLimit<T, R>(
+	items: T[],
+	limit: number,
+	worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+	const results: R[] = new Array(items.length);
+	let cursor = 0;
+	const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+		while (true) {
+			const index = cursor++;
+			if (index >= items.length) return;
+			results[index] = await worker(items[index], index);
+		}
+	});
+	await Promise.all(runners);
+	return results;
+}
+
+async function fetchPlaylistSongs(
+	dirId: number,
+	tid: number,
+	isFav: boolean,
+	songCount = 0,
+): Promise<LibSong[]> {
+	const page = (index: number) => `dirId=${dirId}&tid=${tid}&isFav=${isFav}&page=${index}`;
+	const first = await json(`/api/library/playlist?${page(1)}`);
+	const firstList = (first.songs as QmtuiSong[]) || [];
+	const collected: LibSong[] = firstList.map((song) => toLibSong(song));
+	if (!first.hasMore || firstList.length === 0) return collected;
+
+	// 已知总数就能直接算出页数，剩下的页并发拉取（原来是一页页等）
+	const pageSize = firstList.length;
+	const totalPages = songCount > 0 ? Math.ceil(songCount / pageSize) : 2;
+	const rest = Array.from({ length: Math.max(0, totalPages - 1) }, (_, i) => i + 2);
+	const pages = await mapLimit(rest, 8, async (index) => {
+		try {
+			return (await json(`/api/library/playlist?${page(index)}`)).songs as QmtuiSong[];
+		} catch (error) {
+			console.error("[qmtui] 拉取歌单分页失败", dirId, tid, index, error);
+			return [] as QmtuiSong[];
+		}
+	});
+	for (const list of pages) {
+		for (const song of list || []) collected.push(toLibSong(song));
 	}
 	return collected;
 }
@@ -159,14 +196,16 @@ export function syncQmtuiLibrary(): Promise<void> {
 	syncPromise = (async () => {
 		const data = await json("/api/library/playlists");
 		const list = (data.playlists as Array<Record<string, unknown>>) || [];
-		for (const item of list) {
+		// 歌单之间也并发处理（每个歌单内部的分页同样并发）
+		await mapLimit(list, 4, async (item) => {
 			const dirId = Number(item.dirId) || 0;
 			const tid = Number(item.tid) || 0;
 			const isFav = Boolean(item.isFav);
 			const id = tid || dirId;
 			let songIds: string[] = [];
 			try {
-				songIds = (await fetchPlaylistSongs(dirId, tid, isFav)).map((song) => song.id);
+				const count = Number(item.songCount) || 0;
+				songIds = (await fetchPlaylistSongs(dirId, tid, isFav, count)).map((song) => song.id);
 			} catch (error) {
 				console.error("[qmtui] 同步歌单失败", item.name, error);
 			}
@@ -179,7 +218,7 @@ export function syncQmtuiLibrary(): Promise<void> {
 				coverPath: (item.picUrl as string) || null,
 				songIds,
 			});
-		}
+		});
 		saveSnapshot();
 	})();
 	return syncPromise;

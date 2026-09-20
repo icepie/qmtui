@@ -14,6 +14,30 @@ const coverOf = (albumMid?: string): string | undefined =>
 	albumMid ? `https://y.qq.com/music/photo_new/T002R300x300M000${albumMid}.jpg` : undefined;
 
 const PREVIEW_COUNT = 10;
+// qmtui 修改：推荐接口后端要十几秒，这里用 localStorage 缓存（10 分钟），
+// 命中时先渲染缓存再后台刷新，避免每次进主页都等。
+const CACHE_TTL_MS = 10 * 60_000;
+const cacheKey = (kind: RecommendKind) => `qmtui.recommend.${kind}`;
+
+function readCache(kind: RecommendKind): Song[] | null {
+	try {
+		const raw = localStorage.getItem(cacheKey(kind));
+		if (!raw) return null;
+		const data = JSON.parse(raw) as { at?: number; songs?: Song[] };
+		if (!data?.at || Date.now() - data.at > CACHE_TTL_MS || !Array.isArray(data.songs)) return null;
+		return data.songs;
+	} catch {
+		return null;
+	}
+}
+
+function writeCache(kind: RecommendKind, songs: Song[]): void {
+	try {
+		localStorage.setItem(cacheKey(kind), JSON.stringify({ at: Date.now(), songs }));
+	} catch {
+		// 忽略配额等问题
+	}
+}
 
 export const QmtuiRecommendations: FC = () => {
 	const queueManager = useAtomValue(queueManagerAtom);
@@ -23,7 +47,14 @@ export const QmtuiRecommendations: FC = () => {
 	const [notice, setNotice] = useState("");
 
 	const load = useCallback(async (next: RecommendKind) => {
-		setLoading(true);
+		const cached = readCache(next);
+		if (cached && cached.length > 0) {
+			// 先用缓存渲染，避免等后端
+			setList(cached);
+			setLoading(false);
+		} else {
+			setLoading(true);
+		}
 		setNotice("");
 		try {
 			const data = await fetch(`/api/library/recommend/${next}`).then((r) => r.json());
@@ -43,9 +74,12 @@ export const QmtuiRecommendations: FC = () => {
 				} satisfies Song;
 			});
 			setList(songs);
+			writeCache(next, songs);
 		} catch {
-			setNotice("加载失败");
-			setList([]);
+			if (!cached || cached.length === 0) {
+				setNotice("加载失败");
+				setList([]);
+			}
 		} finally {
 			setLoading(false);
 		}
