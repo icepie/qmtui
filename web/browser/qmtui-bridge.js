@@ -772,6 +772,59 @@ import { state } from './bridge/state.js';
     });
   }
 
+  // 「我喜欢」的全量数组只在真正进入该页面时补齐（见 completeFavoriteSongs），
+  // 免得每次启动都为 1400+ 首收藏多打几十个分页请求。
+  let favoriteSongsSeed = null;
+  let favoriteSongsComplete = false;
+
+  /**
+   * 原生「我喜欢」列表（ReactVirtualized）的可滚动范围由注入数组的长度决定。只注入第一页时
+   * 列表高度锁死在一页，滚到底后原生分页反复请求同一页——用户看到的就是「一直无限加载」。
+   * 所以首页先注入保证首屏，进入该页面后再补齐其余分页并整份重注入。
+   */
+  async function completeFavoriteSongs() {
+    const runtime = getRuntime();
+    if (!runtime || favoriteSongsComplete || !favoriteSongsSeed) return;
+
+    const { first, total } = favoriteSongsSeed;
+    const pageSize = first.length;
+    const pages = pageSize > 0 ? Math.ceil(Math.max(Number(total) || 0, pageSize) / pageSize) : 1;
+    if (pages <= 1)
+    {
+      favoriteSongsComplete = true;
+      return;
+    }
+
+    const all = [...first];
+    for (let page = 2; page <= pages; page++)
+    {
+      try
+      {
+        const result = await api(`/api/library/favorites/songs?page=${page}`);
+        const songs = (result.songs || []).map((song) => toQqSong(song, true));
+        if (songs.length === 0) break;
+        all.push(...songs);
+      }
+      catch (error)
+      {
+        console.warn('[qmtui] 补齐「我喜欢」失败', error);
+        return; // 失败不置完成标记，下次进页面再试
+      }
+    }
+
+    favoriteSongsComplete = true;
+    runtime.store.JG('CollectSingleSongs', all);
+    runtime.store.JG('FavoriteSingleSongs', all);
+  }
+
+  /** 每次刷新曲库都重置补齐状态；当前就停在「我喜欢」页时立即补齐。 */
+  function seedFavoriteSongs(first, total, onLikeRoute)
+  {
+    favoriteSongsSeed = { first, total };
+    favoriteSongsComplete = false;
+    if (onLikeRoute) void completeFavoriteSongs();
+  }
+
   async function refreshLibrary() {
     const runtime = getRuntime();
     if (!runtime || !state.account?.loggedIn) return;
@@ -787,6 +840,7 @@ import { state } from './bridge/state.js';
       const albums = (albumResult.albums || []).map(toNativeAlbum);
       runtime.store.JG('CollectSingleSongs', likedSongs);
       runtime.store.JG('FavoriteSingleSongs', likedSongs);
+      seedFavoriteSongs(likedSongs, songResult.total, runtime.history.location.pathname === '/like');
       runtime.store.JG('collectAlbumList', albums);
       runtime.store.JG(
         'SelfCreatePlayList',
@@ -2114,58 +2168,98 @@ import { state } from './bridge/state.js';
     const token = ++state.routeToken;
     const page = renderPageShell('音乐馆', '发现歌曲、歌单和专辑', ['精选歌单', '新歌', '新专辑']);
     if (!page) return;
-    let loadGeneration = 0;
-    const load = async (index) => {
-      const generation = ++loadGeneration;
+
+    // 三个 tab 的数据源首页只回 40 多条但 hasMore=true，只取第一页就会永远停在第一页。
+    // 与搜索页同一套约定：每个 tab 各自记住 page/hasMore，滚动到底继续取。
+    const emptyText = ['暂时没有精选歌单', '暂时没有新歌', '暂时没有新专辑'];
+    const tabsState = [
+      { endpoint: '/api/library/search/playlists', query: '热门', key: 'playlists' },
+      { endpoint: '/api/library/search', query: '新歌', key: 'songs' },
+      { endpoint: '/api/library/search/albums', query: '新专辑', key: 'albums' },
+    ].map((tab) => ({ ...tab, page: 0, hasMore: true, loading: false, items: [] }));
+
+    let active = 0;
+
+    const fetchTabPage = async (index, targetPage) => {
+      const tab = tabsState[index];
+      const result = await api(`${tab.endpoint}?query=${encodeURIComponent(tab.query)}&page=${targetPage}`);
+      const raw = result[tab.key] || [];
+      const items =
+        index === 0 ? raw.map(toNativePlaylist) : index === 2 ? raw.map(toNativeAlbum) : raw;
+      return { items, hasMore: Boolean(result.hasMore) };
+    };
+
+    const renderTab = (index) => {
+      const tab = tabsState[index];
       clearRenderedContent(page.body);
-      page.body.innerHTML = '<div class="qmtui-loading">正在加载音乐馆…</div>';
-      try {
-        if (index === 0) {
-          const result = await api('/api/library/search/playlists?query=热门');
-          if (token !== state.routeToken || generation !== loadGeneration) return;
-          const playlists = (result.playlists || []).map(toNativePlaylist);
-          if (playlists.length)
-            renderReact(
-              page.body,
-              getRuntime().React.createElement(getRuntime().PlaylistList, {
-                wrapper: { current: page.body },
-                list: playlists,
-                config: { user: false, delete: false, info: true, listen: false },
-              })
-            );
-          else page.body.innerHTML = '<div class="qmtui-empty">暂时没有精选歌单</div>';
-        } else if (index === 1) {
-          const result = await api('/api/library/search?query=新歌');
-          if (token !== state.routeToken || generation !== loadGeneration) return;
-          renderPageSongs(page.body, result.songs || [], '暂时没有新歌');
-        } else {
-          const result = await api('/api/library/search/albums?query=新专辑');
-          if (token !== state.routeToken || generation !== loadGeneration) return;
-          const albums = (result.albums || []).map(toNativeAlbum);
-          if (albums.length)
-            renderReact(
-              page.body,
-              getRuntime().React.createElement(getRuntime().AlbumList, {
-                containerRef: { current: page.body },
-                content: albums,
-                config: { singer: true, subtitle: true, name: true, noplay: true },
-              })
-            );
-          else page.body.innerHTML = '<div class="qmtui-empty">暂时没有新专辑</div>';
-        }
-      } catch (error) {
-        if (generation === loadGeneration)
-          page.body.innerHTML = `<div class="qmtui-empty">${escapeHtml(error.message)}</div>`;
+      if (tab.items.length === 0) {
+        page.body.innerHTML = `<div class="qmtui-empty">${emptyText[index]}</div>`;
+        return;
+      }
+      if (index === 0) {
+        renderReact(
+          page.body,
+          getRuntime().React.createElement(getRuntime().PlaylistList, {
+            wrapper: { current: page.body },
+            list: tab.items,
+            config: { user: false, delete: false, info: true, listen: false },
+          })
+        );
+      } else if (index === 1) {
+        renderPageSongs(page.body, tab.items, emptyText[1]);
+      } else {
+        renderReact(
+          page.body,
+          getRuntime().React.createElement(getRuntime().AlbumList, {
+            containerRef: { current: page.body },
+            content: tab.items,
+            config: { singer: true, subtitle: true, name: true, noplay: true },
+          })
+        );
       }
     };
+
+    const load = async (index, reset) => {
+      const tab = tabsState[index];
+      if (tab.loading || (!reset && !tab.hasMore)) return;
+      tab.loading = true;
+      const targetPage = reset ? 1 : tab.page + 1;
+      if (reset) {
+        tab.page = 0;
+        tab.hasMore = true;
+        tab.items = [];
+      }
+      if (active === index) page.body.innerHTML = '<div class="qmtui-loading">正在加载音乐馆…</div>';
+      try {
+        const { items, hasMore } = await fetchTabPage(index, targetPage);
+        if (token !== state.routeToken) return;
+        tab.page = targetPage;
+        tab.hasMore = hasMore;
+        tab.items = tab.items.concat(items);
+        if (active === index) renderTab(index);
+      } catch (error) {
+        if (active === index)
+          page.body.innerHTML = `<div class="qmtui-empty">${escapeHtml(error.message)}</div>`;
+      } finally {
+        tab.loading = false;
+      }
+    };
+
+    page.body.addEventListener('scroll', () => {
+      if (page.body.scrollHeight - page.body.scrollTop - page.body.clientHeight < 500) {
+        void load(active, false);
+      }
+    });
+
     const tabs = [...page.host.querySelectorAll('[data-page-tab]')];
     tabs.forEach((tab, index) => {
       tab.onclick = () => {
         for (const item of tabs) item.classList.toggle('active', item === tab);
-        load(index);
+        active = index;
+        void load(index, true);
       };
     });
-    load(0);
+    void load(0, true);
   }
 
   const handleRoute = createRouteController({
@@ -2189,7 +2283,11 @@ import { state } from './bridge/state.js';
     const runtime = getRuntime();
     if (!runtime || window.__qmtuiOriginalUiBound) return;
     window.__qmtuiOriginalUiBound = true;
-    runtime.history.listen(() => setTimeout(handleRoute, 0));
+    runtime.history.listen(() => {
+      setTimeout(handleRoute, 0);
+      // 原生「我喜欢」页由 bundle 自己渲染，进入时把全量收藏补齐（见 completeFavoriteSongs）。
+      if (runtime.history.location.pathname === '/like') void completeFavoriteSongs();
+    });
 
     document.addEventListener(
       'keydown',
