@@ -1,8 +1,11 @@
 using System;
+using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using QmTui.Api;
@@ -14,6 +17,107 @@ namespace QmTui.UI;
 
 public static partial class TerminalImageHelper
 {
+    private const long MaxValidPngCacheBytes = 4000 * 1024; // 4MB
+    public const int CurrentCoverVersion = 2;
+    public const int TargetCoverDimension = 1200;
+
+    private static readonly string s_versionFile = Path.Combine(CacheManager.CoversDir, "cover_versions.json");
+    private static readonly ConcurrentDictionary<string, int> s_coverVersions = LoadCoverVersions();
+    private static readonly Lock s_versionLock = new();
+    private static int s_versionDirty;
+
+    private static ConcurrentDictionary<string, int> LoadCoverVersions()
+    {
+        try
+        {
+            if (File.Exists(s_versionFile))
+            {
+                var json = File.ReadAllText(s_versionFile);
+                var dict = JsonSerializer.Deserialize(json, AppJsonContext.Default.DictionaryStringInt32);
+                if (dict != null)
+                {
+                    return new ConcurrentDictionary<string, int>(dict, StringComparer.OrdinalIgnoreCase);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Debug("TerminalImage", $"LoadCoverVersions failed: {ex.Message}");
+        }
+        return new ConcurrentDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    public static int GetCoverVersion(string key) =>
+        s_coverVersions.TryGetValue(key, out var ver) ? ver : 0;
+
+    public static void RecordCoverVersion(string key, int version)
+    {
+        s_coverVersions[key] = version;
+        ScheduleSaveCoverVersions();
+    }
+
+    private static void ScheduleSaveCoverVersions()
+    {
+        if (Interlocked.Exchange(ref s_versionDirty, 1) == 0)
+        {
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(2000).ConfigureAwait(false);
+                Interlocked.Exchange(ref s_versionDirty, 0);
+                SaveCoverVersions();
+            });
+        }
+    }
+
+    private static void SaveCoverVersions()
+    {
+        lock (s_versionLock)
+        {
+            try
+            {
+                var dict = new Dictionary<string, int>(s_coverVersions, StringComparer.OrdinalIgnoreCase);
+                var json = JsonSerializer.Serialize(dict, AppJsonContext.Default.DictionaryStringInt32);
+                var tmp = s_versionFile + ".tmp";
+                File.WriteAllText(tmp, json);
+                File.Move(tmp, s_versionFile, overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Debug("TerminalImage", $"SaveCoverVersions failed: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 读取 PNG 头部前 24 字节获取图像像素宽高（零堆分配）
+    /// </summary>
+    public static (int width, int height)? GetPngDimensions(string? path)
+    {
+        if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
+        try
+        {
+            using var fs = File.OpenRead(path);
+            if (fs.Length < 24) return null;
+            Span<byte> buffer = stackalloc byte[24];
+            if (fs.Read(buffer) < 24) return null;
+
+            // PNG 魔法头: 89 50 4E 47 0D 0A 1A 0A
+            if (buffer[0] != 0x89 || buffer[1] != 0x50 || buffer[2] != 0x4E || buffer[3] != 0x47 ||
+                buffer[4] != 0x0D || buffer[5] != 0x0A || buffer[6] != 0x1A || buffer[7] != 0x0A)
+            {
+                return null;
+            }
+
+            int width = BinaryPrimitives.ReadInt32BigEndian(buffer[16..20]);
+            int height = BinaryPrimitives.ReadInt32BigEndian(buffer[20..24]);
+            return width > 0 && height > 0 ? (width, height) : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     /// 校验 PNG 文件头魔数与 IEND 尾部，确保文件完整有效
     /// </summary>
     public static bool IsValidPngFile(string? path)
@@ -76,6 +180,29 @@ public static partial class TerminalImageHelper
     }
 
     /// <summary>
+    /// 校验 WebP 文件头 RIFF 与 WEBP 标识
+    /// </summary>
+    public static bool IsValidWebpFile(string? path)
+    {
+        if (string.IsNullOrEmpty(path) || !File.Exists(path)) return false;
+        try
+        {
+            var info = new FileInfo(path);
+            if (info.Length < 16) return false;
+
+            using var fs = File.OpenRead(path);
+            byte[] header = new byte[12];
+            if (fs.Read(header, 0, 12) < 12) return false;
+            return header[0] == 'R' && header[1] == 'I' && header[2] == 'F' && header[3] == 'F' &&
+                   header[8] == 'W' && header[9] == 'E' && header[10] == 'B' && header[11] == 'P';
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 流式获取远程图像并原子落盘，避免大尺寸封面分配到大对象堆 (LOH)
     /// </summary>
     private static async Task<bool> DownloadImageStreamToFileAsync(string url, string destinationFile, CancellationToken cancellationToken = default)
@@ -102,9 +229,9 @@ public static partial class TerminalImageHelper
                 return true;
             }
         }
-        catch
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // 容错重试或取消
+            AppLogger.Debug("TerminalImage", $"DownloadImageStreamToFileAsync failed for {url}: {ex.Message}");
         }
         finally
         {
@@ -124,15 +251,34 @@ public static partial class TerminalImageHelper
         if (string.IsNullOrWhiteSpace(albumMid) || cancellationToken.IsCancellationRequested) return null;
 
         var pngFile = Path.Combine(s_cacheDir, $"{albumMid}.png");
+        bool isOutdated = false;
         if (File.Exists(pngFile))
         {
             var fi = new FileInfo(pngFile);
-            if (fi.Length <= 2500 * 1024 && IsValidPngFile(pngFile))
+            if (fi.Length <= MaxValidPngCacheBytes && IsValidPngFile(pngFile))
             {
-                CacheManager.RecordAccess($"covers/{Path.GetFileName(pngFile)}", fi.Length);
-                return pngFile;
+                var dims = GetPngDimensions(pngFile);
+                int ver = GetCoverVersion(albumMid);
+                isOutdated = dims.HasValue &&
+                             (dims.Value.width < TargetCoverDimension || dims.Value.height < TargetCoverDimension) &&
+                             ver < CurrentCoverVersion;
+
+                if (!isOutdated)
+                {
+                    if (dims.HasValue && dims.Value.width >= TargetCoverDimension && ver < CurrentCoverVersion)
+                    {
+                        RecordCoverVersion(albumMid, CurrentCoverVersion);
+                    }
+                    CacheManager.RecordAccess($"covers/{Path.GetFileName(pngFile)}", fi.Length);
+                    return pngFile;
+                }
+
+                AppLogger.Info("TerminalImage", $"Cover {albumMid}.png ({dims?.width}x{dims?.height}, v{ver}) is outdated, upgrading to {TargetCoverDimension}px...");
             }
-            try { File.Delete(pngFile); } catch {}
+            else
+            {
+                try { File.Delete(pngFile); } catch {}
+            }
         }
 
         var localFile = Path.Combine(s_cacheDir, $"{albumMid}.jpg");
@@ -141,7 +287,21 @@ public static partial class TerminalImageHelper
             try { File.Delete(localFile); } catch {}
         }
 
-        if (!File.Exists(localFile) || new FileInfo(localFile).Length == 0)
+        if (isOutdated && File.Exists(localFile))
+        {
+            var highResUrl = $"https://y.qq.com/music/photo_new/T002R1200x1200M000{albumMid}.jpg?max_age=2592000";
+            var tempHighRes = localFile + ".highres.tmp";
+            if (await DownloadImageStreamToFileAsync(highResUrl, tempHighRes, cancellationToken).ConfigureAwait(false))
+            {
+                try
+                {
+                    File.Move(tempHighRes, localFile, overwrite: true);
+                }
+                catch {}
+            }
+            try { if (File.Exists(tempHighRes)) File.Delete(tempHighRes); } catch {}
+        }
+        else if (!File.Exists(localFile) || new FileInfo(localFile).Length == 0)
         {
             var rawMid = albumMid.Contains('_') ? albumMid.Split('_')[0] : albumMid;
             string[] resolutionUrls =
@@ -168,6 +328,11 @@ public static partial class TerminalImageHelper
 
         if (!File.Exists(localFile) || new FileInfo(localFile).Length == 0 || cancellationToken.IsCancellationRequested)
         {
+            if (isOutdated && File.Exists(pngFile))
+            {
+                RecordCoverVersion(albumMid, CurrentCoverVersion);
+                return pngFile;
+            }
             return null;
         }
 
@@ -180,8 +345,14 @@ public static partial class TerminalImageHelper
         var processed = await ApplyRoundedCornersAsync(localFile, pngFile, cancellationToken).ConfigureAwait(false);
         if (!string.IsNullOrEmpty(processed) && File.Exists(processed))
         {
+            RecordCoverVersion(albumMid, CurrentCoverVersion);
             CacheManager.RecordAccess($"covers/{Path.GetFileName(processed)}", new FileInfo(processed).Length);
             CacheManager.EnforceLimitAsync();
+        }
+        else if (isOutdated && File.Exists(pngFile))
+        {
+            RecordCoverVersion(albumMid, CurrentCoverVersion);
+            return pngFile;
         }
         return processed ?? localFile;
     }
@@ -197,7 +368,7 @@ public static partial class TerminalImageHelper
         if (File.Exists(pngFile))
         {
             var fi = new FileInfo(pngFile);
-            if (fi.Length > 2500 * 1024 || !IsValidPngFile(pngFile))
+            if (fi.Length > MaxValidPngCacheBytes || !IsValidPngFile(pngFile))
             {
                 try { File.Delete(pngFile); } catch {}
             }
@@ -224,8 +395,9 @@ public static partial class TerminalImageHelper
                 File.Copy(localRawImagePath, persistentFallback, overwrite: true);
                 return persistentFallback;
             }
-            catch
+            catch (Exception ex)
             {
+                AppLogger.Debug("TerminalImage", $"Copy persistentFallback failed: {ex.Message}");
                 return null;
             }
         }
@@ -244,7 +416,7 @@ public static partial class TerminalImageHelper
         if (File.Exists(pngFile))
         {
             var fi = new FileInfo(pngFile);
-            if (fi.Length <= 2500 * 1024 && IsValidPngFile(pngFile))
+            if (fi.Length <= MaxValidPngCacheBytes && IsValidPngFile(pngFile))
             {
                 CacheManager.RecordAccess($"covers/{Path.GetFileName(pngFile)}", fi.Length);
                 return pngFile;
@@ -302,15 +474,35 @@ public static partial class TerminalImageHelper
         if (string.IsNullOrWhiteSpace(songMid) || string.IsNullOrWhiteSpace(vsMid) || cancellationToken.IsCancellationRequested) return null;
 
         var pngFile = Path.Combine(s_cacheDir, $"single_{songMid}.png");
+        var coverKey = $"single_{songMid}";
+        bool isOutdated = false;
         if (File.Exists(pngFile))
         {
             var fi = new FileInfo(pngFile);
-            if (fi.Length <= 2500 * 1024 && IsValidPngFile(pngFile))
+            if (fi.Length <= MaxValidPngCacheBytes && IsValidPngFile(pngFile))
             {
-                CacheManager.RecordAccess($"covers/{Path.GetFileName(pngFile)}", fi.Length);
-                return pngFile;
+                var dims = GetPngDimensions(pngFile);
+                int ver = GetCoverVersion(coverKey);
+                isOutdated = dims.HasValue &&
+                             (dims.Value.width < TargetCoverDimension || dims.Value.height < TargetCoverDimension) &&
+                             ver < CurrentCoverVersion;
+
+                if (!isOutdated)
+                {
+                    if (dims.HasValue && dims.Value.width >= TargetCoverDimension && ver < CurrentCoverVersion)
+                    {
+                        RecordCoverVersion(coverKey, CurrentCoverVersion);
+                    }
+                    CacheManager.RecordAccess($"covers/{Path.GetFileName(pngFile)}", fi.Length);
+                    return pngFile;
+                }
+
+                AppLogger.Info("TerminalImage", $"Single cover {coverKey}.png ({dims?.width}x{dims?.height}, v{ver}) is outdated, upgrading to {TargetCoverDimension}px...");
             }
-            try { File.Delete(pngFile); } catch {}
+            else
+            {
+                try { File.Delete(pngFile); } catch {}
+            }
         }
 
         var localFile = Path.Combine(s_cacheDir, $"single_{songMid}.jpg");
@@ -319,7 +511,26 @@ public static partial class TerminalImageHelper
             try { File.Delete(localFile); } catch {}
         }
 
-        if (!File.Exists(localFile) || new FileInfo(localFile).Length == 0)
+        if (isOutdated && File.Exists(localFile))
+        {
+            string[] upgradeUrls =
+            [
+                $"https://y.qq.com/music/photo_new/T062M000{vsMid}.jpg?max_age=2592000",
+                $"https://y.qq.com/music/photo_new/T062R1200x1200M000{vsMid}.jpg?max_age=2592000"
+            ];
+            var tempHighRes = localFile + ".highres.tmp";
+            foreach (var url in upgradeUrls)
+            {
+                if (cancellationToken.IsCancellationRequested) break;
+                if (await DownloadImageStreamToFileAsync(url, tempHighRes, cancellationToken).ConfigureAwait(false))
+                {
+                    try { File.Move(tempHighRes, localFile, overwrite: true); } catch {}
+                    break;
+                }
+            }
+            try { if (File.Exists(tempHighRes)) File.Delete(tempHighRes); } catch {}
+        }
+        else if (!File.Exists(localFile) || new FileInfo(localFile).Length == 0)
         {
             string[] resolutionUrls =
             [
@@ -342,6 +553,11 @@ public static partial class TerminalImageHelper
 
         if (!File.Exists(localFile) || new FileInfo(localFile).Length == 0 || cancellationToken.IsCancellationRequested)
         {
+            if (isOutdated && File.Exists(pngFile))
+            {
+                RecordCoverVersion(coverKey, CurrentCoverVersion);
+                return pngFile;
+            }
             return null;
         }
 
@@ -351,6 +567,66 @@ public static partial class TerminalImageHelper
         }
 
         var processed = await ApplyRoundedCornersAsync(localFile, pngFile, cancellationToken).ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(processed) && File.Exists(processed))
+        {
+            RecordCoverVersion(coverKey, CurrentCoverVersion);
+        }
+        else if (isOutdated && File.Exists(pngFile))
+        {
+            RecordCoverVersion(coverKey, CurrentCoverVersion);
+            return pngFile;
+        }
+        return processed ?? localFile;
+    }
+
+    /// <summary>
+    /// 获取 HTTP/HTTPS 直链封面（包含 Connect 协议下 App 提供的代理封面），并持久化到本地缓存与圆角处理
+    /// </summary>
+    public static async Task<string?> EnsureHttpCoverAsync(string url, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(url) || cancellationToken.IsCancellationRequested) return null;
+
+        var urlHash = Convert.ToHexString(System.Security.Cryptography.MD5.HashData(Encoding.UTF8.GetBytes(url))).ToLowerInvariant();
+        var pngFile = Path.Combine(s_cacheDir, $"http_{urlHash}.png");
+        if (File.Exists(pngFile))
+        {
+            var fi = new FileInfo(pngFile);
+            if (fi.Length <= MaxValidPngCacheBytes && IsValidPngFile(pngFile))
+            {
+                CacheManager.RecordAccess($"covers/{Path.GetFileName(pngFile)}", fi.Length);
+                return pngFile;
+            }
+            try { File.Delete(pngFile); } catch { }
+        }
+
+        var localFile = Path.Combine(s_cacheDir, $"http_{urlHash}.raw");
+        if (File.Exists(localFile) && (!IsValidJpgFile(localFile) && !IsValidPngFile(localFile) && !IsValidWebpFile(localFile)))
+        {
+            try { File.Delete(localFile); } catch { }
+        }
+
+        if (!File.Exists(localFile) || new FileInfo(localFile).Length == 0)
+        {
+            if (cancellationToken.IsCancellationRequested) return null;
+            await DownloadImageStreamToFileAsync(url, localFile, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!File.Exists(localFile) || new FileInfo(localFile).Length == 0 || cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+
+        if (!IsImageSupported)
+        {
+            return localFile;
+        }
+
+        var processed = await ApplyRoundedCornersAsync(localFile, pngFile, cancellationToken).ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(processed) && File.Exists(processed))
+        {
+            CacheManager.RecordAccess($"covers/{Path.GetFileName(processed)}", new FileInfo(processed).Length);
+            CacheManager.EnforceLimitAsync();
+        }
         return processed ?? localFile;
     }
 
@@ -360,6 +636,18 @@ public static partial class TerminalImageHelper
     public static async Task<string?> EnsureSongCoverAsync(Song? song, CancellationToken cancellationToken = default)
     {
         if (song == null || cancellationToken.IsCancellationRequested) return null;
+
+        // 优先检查是否有 HTTP / HTTPS 直链封面（包含 App 提供的 http://<ip>:8766/cover/local?... 代理地址或三方直链）
+        if (!string.IsNullOrEmpty(song.CoverUrl) &&
+            (song.CoverUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+             song.CoverUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
+        {
+            var httpCover = await EnsureHttpCoverAsync(song.CoverUrl, cancellationToken).ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(httpCover))
+            {
+                return httpCover;
+            }
+        }
 
         if (song.IsWebDav)
         {

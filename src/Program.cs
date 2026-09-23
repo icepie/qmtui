@@ -13,7 +13,7 @@ public static partial class Program
     {
         if (args.Contains("--version") || args.Contains("-v"))
         {
-            Console.WriteLine("qmtui 0.3.4");
+            Console.WriteLine("qmtui 0.3.8");
             return;
         }
 
@@ -183,6 +183,7 @@ public static partial class Program
                 Application.Init();
                 if (Application.Driver != null)
                 {
+                    Application.Driver.Clipboard = new QmTui.Services.LinuxSystemClipboard();
                     Application.Driver.Force16Colors = false;
                 }
                 try

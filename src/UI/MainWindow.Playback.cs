@@ -10,6 +10,7 @@ using Terminal.Gui.App;
 using Terminal.Gui.Drawing;
 using Terminal.Gui.Views;
 using QmTui.Api;
+using QmTui.Connect.Models;
 using QmTui.Models;
 using QmTui.Player;
 using QmTui.Services;
@@ -33,11 +34,17 @@ public sealed partial class MainWindow
     private string? _lastResolvedPlayUrl;
     private double _accumulatedPlaySeconds;
     private double _lastProgressSec;
+
+    // 云端最近播放上报状态机（单曲 5s / 歌单或专辑上下文 15s 独立触发）
+    private bool _hasReportedCurrentSong;
+    private bool _hasReportedCurrentContext;
+    private string? _currentContextKey;
     private string? _currentCoverFilePath;
+    private long _lastConnectBroadcastTick;
 
-    private Task PlaySongAsync(Song song) => PlaySongAsync(song, 0);
+    private Task PlaySongAsync(Song song) => PlaySongAsync(song, 0, null);
 
-    private async Task PlaySongAsync(Song song, double startPosition = 0)
+    private async Task PlaySongAsync(Song song, double startPosition = 0, string? overridePlayUrl = null)
     {
         var previousCts = Interlocked.Exchange(ref _playbackCts, new CancellationTokenSource());
         try
@@ -61,12 +68,44 @@ public sealed partial class MainWindow
         catch {}
         _cachingCts = new CancellationTokenSource();
         _hasTriggeredCacheForCurrentSong = false;
+        _hasReportedCurrentSong = false;
+        var srcCtx = PlaybackQueueService.Instance.SourceContext;
+        string? newContextKey = srcCtx switch
+        {
+            PlaybackSourceContext.Playlist p => $"playlist:{p.Id}",
+            PlaybackSourceContext.Album a => $"album:{(a.Id > 0 ? a.Id.ToString() : a.Mid)}",
+            _ => null
+        };
+        if (newContextKey != _currentContextKey)
+        {
+            _currentContextKey = newContextKey;
+            _hasReportedCurrentContext = false;
+        }
         _lastResolvedPlayUrl = null;
         _accumulatedPlaySeconds = 0.0;
         _lastProgressSec = startPosition;
         _currentCoverFilePath = null;
 
         bool IsStale() => ct.IsCancellationRequested || Interlocked.Read(ref _playbackSessionId) != currentSession;
+
+        // 对齐官方双向反向接力：若为移动端本地曲目且 PC 本地不存在物理文件，向移动端请求 HTTP 串流代理
+        bool isLocalSong = song.IsLocal || song.Mid.StartsWith("local_", StringComparison.OrdinalIgnoreCase);
+        bool directFileExists = !string.IsNullOrEmpty(song.LocalFilePath) && File.Exists(song.LocalFilePath);
+        if (isLocalSong && !directFileExists && string.IsNullOrEmpty(overridePlayUrl))
+        {
+            if (_connectServer != null && _connectServer.IsRunning && _connectServer.ConnectedCount > 0)
+            {
+                AppLogger.Info("MainWindow.Playback", $"Local song file not found on PC ({song.LocalFilePath}), requesting mobile stream proxy for {song.Title}");
+                var connectSong = ConnectSong.FromDomainSong(song, _actualQualityTier, _connectServer.ActualPort);
+                _activeSong = song;
+                PlaybackQueueService.Instance.SyncCurrentSong(song);
+                _songListView.SetPlayingSong(song.Mid);
+                _controlBar.SetCurrentSong(song);
+                _controlBar.UpdateStatus($"[等待串流] 正在请求手机端中转: {song.Title} ...");
+                _connectServer.BroadcastPlaySong(connectSong);
+                return;
+            }
+        }
 
         _activeSong = song;
         PlaybackQueueService.Instance.SyncCurrentSong(song);
@@ -131,6 +170,7 @@ public sealed partial class MainWindow
 
         _currentLyrics.Clear();
         _currentActiveLyricIndex = -1;
+        _lastRemoteSyncedSongMid = null;
 
         Application.Invoke(() =>
         {
@@ -152,7 +192,39 @@ public sealed partial class MainWindow
         string? playUrl;
         List<LyricLine> lyrics;
 
-        if (song.IsWebDav)
+        if (!string.IsNullOrEmpty(overridePlayUrl))
+        {
+            playUrl = overridePlayUrl;
+            _actualQualityTier = AudioQualityHelper.DetermineLocalOrWebDavTier(song.Quality, playUrl);
+            Application.Invoke(() => _controlBar.UpdateQuality(AudioQualityHelper.GetBadge(_actualQualityTier)));
+            if (!string.IsNullOrEmpty(song.Mid) && !song.IsLocal && !song.IsWebDav)
+            {
+                lyrics = await MusicApi.GetLyricsAsync(song.Mid).ConfigureAwait(false);
+            }
+            else if (song.IsLocal && !string.IsNullOrEmpty(song.LocalFilePath) && File.Exists(song.LocalFilePath))
+            {
+                lyrics = await QmTui.Services.LocalMusicService.GetLyricsAsync(song).ConfigureAwait(false);
+            }
+            else if (song.IsWebDav)
+            {
+                var servers = WebDavService.GetServers();
+                var server = (!string.IsNullOrEmpty(song.WebDavServerId) ? servers.Find(s => s.Id == song.WebDavServerId) : null)
+                             ?? WebDavService.GetActiveServer();
+                lyrics = server != null && !string.IsNullOrEmpty(song.WebDavHref)
+                    ? await WebDavService.EnsureLyricsAsync(server, song).ConfigureAwait(false)
+                    : [];
+            }
+            else
+            {
+                // 手机反向接力本地曲目 / 代理串流：优先检索本地多级歌词母本与快表缓存
+                var cached = LocalLyricAutoMatcher.TryGetCachedLyrics(song, playUrl);
+                lyrics = (cached != null && cached.Lines.Count > 0)
+                    ? cached.Lines.ConvertAll(l => l.ToDomain())
+                    : [];
+            }
+            if (IsStale()) return;
+        }
+        else if (song.IsWebDav)
         {
             var server = WebDavService.GetActiveServer();
             if (server != null && !string.IsNullOrEmpty(song.WebDavHref))
@@ -307,6 +379,10 @@ public sealed partial class MainWindow
             _standaloneWebServer.CurrentLyrics = lyrics;
             _standaloneWebServer.BroadcastState("lyrics_change");
         }
+        if (lyrics.Count > 0)
+        {
+            BroadcastConnectLyrics();
+        }
 
         var hasTrans = LyricParser.HasTranslation(_currentLyrics) && LyricParser.NeedsTranslation(_currentLyrics);
         _showTranslation = hasTrans;
@@ -378,7 +454,11 @@ public sealed partial class MainWindow
                     {
                         _currentCoverFilePath = cover;
                         _mprisService.UpdateCover(cover);
-                        Application.Invoke(() => _nowPlayingView.UpdateCover(cover));
+                        Application.Invoke(() =>
+                        {
+                            _nowPlayingView.UpdateCover(cover);
+                            BroadcastConnectPlayerState();
+                        });
                     }
                 }
                 catch (OperationCanceledException) {}
@@ -393,12 +473,11 @@ public sealed partial class MainWindow
                 }
             }, ct);
 
-            // 若为本地歌曲或 WebDAV 歌曲，且无歌词或缺少翻译歌词（仅在外文歌曲确实需要翻译时），后台自动尝试匹配在线歌词与双语翻译
+            // 若为本地歌曲或 WebDAV 歌曲，且满足智能匹配规则，后台自动尝试匹配在线歌词与双语翻译
             bool isLocalOrWebDav = song.IsLocal || song.IsWebDav;
-            bool isNoLyrics = _currentLyrics.Count == 0 || (_currentLyrics.Count == 1 && _currentLyrics[0].Text == "暂无歌词");
-            bool isMissingTrans = !hasTrans && LyricParser.NeedsTranslation(_currentLyrics);
-            if (isLocalOrWebDav && !IsCurrentSongLyricMatched(song) && (isNoLyrics || isMissingTrans))
+            if (isLocalOrWebDav && !IsCurrentSongLyricMatched(song) && LocalLyricAutoMatcher.NeedsMatching(song, _currentLyrics))
             {
+                bool isNoLyrics = _currentLyrics.Count == 0 || (_currentLyrics.Count == 1 && _currentLyrics[0].Text == "暂无歌词");
                 _ = Task.Run(async () =>
                 {
                     if (IsStale()) return;
@@ -464,6 +543,7 @@ public sealed partial class MainWindow
         {
             if (IsStale()) return;
             RefreshLyricListView();
+            BroadcastConnectLyrics();
         });
 
         // 启动后台平滑预热下一首曲目的音源与封面
@@ -493,6 +573,8 @@ public sealed partial class MainWindow
         {
             _standaloneWebServer.IsPlaying = isPlaying;
         }
+        BroadcastConnectPlayerState();
+        BroadcastConnectQueueState();
     }
 
     private void AdjustVolume(int delta)
@@ -592,6 +674,33 @@ public sealed partial class MainWindow
             }
         }
 
+        // 云端最近播放上报：单曲 >= 5s，歌单/专辑上下文 >= 15s 独立解耦触发
+        if (!_activeSong.IsLocal && !_activeSong.IsWebDav && UserSession.Current.IsLoggedIn)
+        {
+            if (!_hasReportedCurrentSong && _accumulatedPlaySeconds >= 5.0)
+            {
+                _hasReportedCurrentSong = true;
+                var songToReport = _activeSong;
+                Task.Run(() => MusicApi.ReportRecentSongAsync(songToReport, CancellationToken.None));
+            }
+
+            if (!_hasReportedCurrentContext && _accumulatedPlaySeconds >= 15.0)
+            {
+                var srcCtx = PlaybackQueueService.Instance.SourceContext;
+                if (srcCtx is PlaybackSourceContext.Playlist pCtx)
+                {
+                    _hasReportedCurrentContext = true;
+                    Task.Run(() => MusicApi.ReportRecentPlaylistAsync(pCtx.Id, pCtx.Title, CancellationToken.None));
+                }
+                else if (srcCtx is PlaybackSourceContext.Album aCtx)
+                {
+                    _hasReportedCurrentContext = true;
+                    string aId = aCtx.Id > 0 ? aCtx.Id.ToString() : aCtx.Mid;
+                    Task.Run(() => MusicApi.ReportRecentAlbumAsync(aId, aCtx.Mid, aCtx.Title, CancellationToken.None));
+                }
+            }
+        }
+
         // AOD 后台息屏模式：仅在后台同步 D-Bus 位置与防抖持久化，不触发前台界面控件重绘
         if (_isAodMode)
         {
@@ -603,6 +712,15 @@ public sealed partial class MainWindow
                 _lastProgressSaveTick = Environment.TickCount64;
                 UserSession.SaveDebounced();
             }
+
+            if (_connectServer != null && _connectServer.IsRunning && _connectServer.ConnectedCount > 0)
+            {
+                if (Environment.TickCount64 - _lastConnectBroadcastTick > 500)
+                {
+                    _lastConnectBroadcastTick = Environment.TickCount64;
+                    BroadcastConnectPlayerState();
+                }
+            }
             return;
         }
 
@@ -612,6 +730,16 @@ public sealed partial class MainWindow
 
         _controlBar.UpdateProgress(cur, total, progressPercent);
         _mprisService.UpdatePosition(currentSec, _activeSong.Duration);
+
+        // 同步推送高精度播放进度与状态给移动端 App
+        if (_connectServer != null && _connectServer.IsRunning && _connectServer.ConnectedCount > 0)
+        {
+            if (Environment.TickCount64 - _lastConnectBroadcastTick > 400)
+            {
+                _lastConnectBroadcastTick = Environment.TickCount64;
+                BroadcastConnectPlayerState();
+            }
+        }
 
         UserSession.Current.LastPlaybackPositionSeconds = currentSec;
         UserSession.Current.LastPlayedSong = _activeSong;
@@ -807,6 +935,4 @@ public sealed partial class MainWindow
             AppLogger.Debug("MainWindow", $"PrefetchNextSongAsync exception: {ex.Message}");
         }
     }
-
-
 }

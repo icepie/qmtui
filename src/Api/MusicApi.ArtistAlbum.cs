@@ -575,8 +575,7 @@ public sealed partial class MusicApi
 
                     if (!string.IsNullOrEmpty(mid) && !string.IsNullOrEmpty(name))
                     {
-                        var artistDisplay = string.IsNullOrEmpty(singer) ? pubTime : (string.IsNullOrEmpty(pubTime) ? singer : $"{singer} ({pubTime})");
-                        albums.Add(new Album(id, mid, name, artistDisplay, songCount));
+                        albums.Add(new Album(id, mid, name, singer, songCount, PublishDate: pubTime));
                     }
                 }
                 return albums;
@@ -607,6 +606,7 @@ public sealed partial class MusicApi
         string publishDate = "";
         string company = "";
         string desc = "";
+        long albumId = 0;
 
         try
         {
@@ -629,7 +629,15 @@ public sealed partial class MusicApi
                 adObj.TryGetProperty("data", out var dataObj) &&
                 dataObj.TryGetProperty("basicInfo", out var basicInfo))
             {
-                if (basicInfo.TryGetProperty("name", out var nProp)) albumName = nProp.GetString() ?? "";
+                if (basicInfo.TryGetProperty("albumID", out var aIdProp) ||
+                    basicInfo.TryGetProperty("id", out aIdProp) ||
+                    basicInfo.TryGetProperty("album_id", out aIdProp))
+                {
+                    if (aIdProp.ValueKind == JsonValueKind.Number) albumId = aIdProp.GetInt64();
+                    else if (aIdProp.ValueKind == JsonValueKind.String && long.TryParse(aIdProp.GetString(), out var parsedId)) albumId = parsedId;
+                }
+                if (basicInfo.TryGetProperty("albumName", out var anProp)) albumName = anProp.GetString() ?? "";
+                else if (basicInfo.TryGetProperty("name", out var nProp)) albumName = nProp.GetString() ?? "";
                 if (basicInfo.TryGetProperty("singerName", out var snProp)) artistName = snProp.GetString() ?? "";
                 if (basicInfo.TryGetProperty("publishDate", out var pdProp)) publishDate = pdProp.GetString() ?? "";
                 if (basicInfo.TryGetProperty("company", out var cProp)) company = cProp.GetString() ?? "";
@@ -652,7 +660,96 @@ public sealed partial class MusicApi
             artistName = songs[0].Artist;
         }
 
-        return new AlbumDetail(albumMid, albumName, artistName, publishDate, company, desc, songs);
+        return new AlbumDetail(albumMid, albumName, artistName, publishDate, company, desc, songs, albumId);
+    }
+
+    /// <summary>
+    /// 查询歌手云端关注状态
+    /// </summary>
+    public static async Task<bool> CheckSingerFollowStatusAsync(string singerMid, CancellationToken ct = default)
+    {
+        if (!UserSession.Current.IsLoggedIn || string.IsNullOrWhiteSpace(singerMid)) return false;
+
+        var uin = string.IsNullOrWhiteSpace(UserSession.Current.Uin) ? "0" : UserSession.Current.Uin;
+        var payload = $"{{\"comm\":{{\"ct\":20,\"cv\":1770,\"uin\":\"{uin}\",\"tmeAppID\":\"qqmusic\"}},\"concern_status\":{{\"module\":\"Concern.ConcernSystemServer\",\"method\":\"cgi_qry_concern_status\",\"param\":{{\"vec_userinfo\":[{{\"usertype\":1,\"userid\":\"{singerMid}\"}}],\"opertype\":5,\"encrypt_singerid\":1}}}}}}";
+
+        try
+        {
+            var url = "https://u.y.qq.com/cgi-bin/musicu.fcg";
+            using var req = new HttpRequestMessage(HttpMethod.Post, url);
+            req.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+            var cookieHeader = UserSession.Current.GetCookieHeader();
+            if (!string.IsNullOrEmpty(cookieHeader))
+            {
+                req.Headers.Add("Cookie", cookieHeader);
+            }
+
+            using var resp = await s_httpClient.SendAsync(req, ct).ConfigureAwait(false);
+            var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("concern_status", out var concern) &&
+                concern.TryGetProperty("data", out var data) &&
+                data.TryGetProperty("map_singer_status", out var map) &&
+                map.TryGetProperty(singerMid, out var statusElem) &&
+                statusElem.TryGetInt32(out var status))
+            {
+                return status == 1;
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("MusicApi", $"CheckSingerFollowStatusAsync error for mid={singerMid}", ex);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 上报关注或取消关注歌手
+    /// </summary>
+    public static async Task<bool> ToggleSingerFollowAsync(string singerMid, bool isFollow, CancellationToken ct = default)
+    {
+        if (!UserSession.Current.IsLoggedIn || string.IsNullOrWhiteSpace(singerMid)) return false;
+
+        await LoginService.EnsureMusicKeyAsync(ct).ConfigureAwait(false);
+
+        var uin = string.IsNullOrWhiteSpace(UserSession.Current.Uin) ? "0" : UserSession.Current.Uin;
+        var operType = isFollow ? 0 : 1;
+        var subKey = isFollow ? "focus_singer" : "cancel_singer";
+        var payload = $"{{\"comm\":{{\"ct\":20,\"cv\":1770,\"uin\":\"{uin}\",\"tmeAppID\":\"qqmusic\"}},\"{subKey}\":{{\"module\":\"Concern.ConcernSystemServer\",\"method\":\"cgi_concern_user_v2\",\"param\":{{\"opertype\":{operType},\"source\":0,\"userinfo\":{{\"usertype\":1,\"userid\":\"{singerMid}\"}},\"encrypt_singerid\":1}}}}}}";
+
+        try
+        {
+            var url = "https://u.y.qq.com/cgi-bin/musicu.fcg";
+            using var req = new HttpRequestMessage(HttpMethod.Post, url);
+            req.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+            var cookieHeader = UserSession.Current.GetCookieHeader();
+            if (!string.IsNullOrEmpty(cookieHeader))
+            {
+                req.Headers.Add("Cookie", cookieHeader);
+            }
+
+            using var resp = await s_httpClient.SendAsync(req, ct).ConfigureAwait(false);
+            var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty(subKey, out var targetObj))
+            {
+                int outerCode = targetObj.TryGetProperty("code", out var oc) && oc.TryGetInt32(out var ocv) ? ocv : -1;
+                int innerCode = targetObj.TryGetProperty("data", out var innerData) &&
+                                innerData.TryGetProperty("code", out var ic) && ic.TryGetInt32(out var icv) ? icv : -1;
+                return outerCode == 0 && innerCode == 0;
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("MusicApi", $"ToggleSingerFollowAsync error for mid={singerMid}, isFollow={isFollow}", ex);
+        }
+
+        return false;
     }
 }
 

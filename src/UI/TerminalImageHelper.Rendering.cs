@@ -14,7 +14,54 @@ namespace QmTui.UI;
 
 public static partial class TerminalImageHelper
 {
-    private const int MaxCoverDimension = 1000;
+    private const int MaxCoverDimension = 1200;
+
+    private static (int width, int height, byte[] pixelData)? DecodeImageRgba(byte[] fileBytes, bool isWebp)
+    {
+        if (isWebp)
+        {
+            try
+            {
+                using var image = SixLabors.ImageSharp.Image.Load<SixLabors.ImageSharp.PixelFormats.Rgba32>(fileBytes);
+                if (image.Width <= 0 || image.Height <= 0) return null;
+                var pixelData = new byte[image.Width * image.Height * 4];
+                image.CopyPixelDataTo(pixelData);
+                return (image.Width, image.Height, pixelData);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Debug("TerminalImageHelper", $"ImageSharp WebP decode failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        try
+        {
+            var image = StbImageSharp.ImageResult.FromMemory(fileBytes, StbImageSharp.ColorComponents.RedGreenBlueAlpha);
+            if (image != null && image.Width > 0 && image.Height > 0 && image.Data != null)
+            {
+                return (image.Width, image.Height, image.Data);
+            }
+        }
+        catch
+        {
+            // fallback to ImageSharp
+        }
+
+        try
+        {
+            using var image = SixLabors.ImageSharp.Image.Load<SixLabors.ImageSharp.PixelFormats.Rgba32>(fileBytes);
+            if (image.Width <= 0 || image.Height <= 0) return null;
+            var pixelData = new byte[image.Width * image.Height * 4];
+            image.CopyPixelDataTo(pixelData);
+            return (image.Width, image.Height, pixelData);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Debug("TerminalImage", $"Image decode failed: {ex.Message}");
+            return null;
+        }
+    }
 
     private static async Task<string?> ApplyRoundedCornersAsync(string sourceFile, string targetPng, CancellationToken cancellationToken = default)
     {
@@ -26,18 +73,20 @@ public static partial class TerminalImageHelper
             byte[] fileBytes = await File.ReadAllBytesAsync(sourceFile, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
 
-            var image = StbImageSharp.ImageResult.FromMemory(fileBytes, StbImageSharp.ColorComponents.RedGreenBlueAlpha);
-            if (image == null || image.Width <= 0 || image.Height <= 0 || image.Data == null)
+            bool isWebp = IsValidWebpFile(sourceFile);
+            var decoded = DecodeImageRgba(fileBytes, isWebp);
+            if (decoded == null)
             {
                 return null;
             }
             cancellationToken.ThrowIfCancellationRequested();
 
-            int width = image.Width;
-            int height = image.Height;
-            byte[] pixelData = image.Data;
+            int width = decoded.Value.width;
+            int height = decoded.Value.height;
+            byte[] pixelData = decoded.Value.pixelData;
 
-            // 若图像尺寸超过 1000 像素，使用双线性插值算法等比缩放至 1000 像素内，大幅节省大对象堆与 Kitty Base64 传输内存
+            // 若图像尺寸超过 1200 像素（如单曲原画母图），使用双线性插值算法等比缩放至 1200 像素内；
+            // 官方 1200x1200 专辑封面直接保留原生分辨率，消除额外重采样开销并保证 2K/4K 屏幕清晰呈现
             if (width > MaxCoverDimension || height > MaxCoverDimension)
             {
                 float scale = Math.Min((float)MaxCoverDimension / width, (float)MaxCoverDimension / height);
@@ -254,7 +303,7 @@ public static partial class TerminalImageHelper
     private readonly record struct ImageCacheKey(string FilePath, int Cols, int Rows, long LastWriteTicks);
 
     private static readonly Lock s_cacheLock = new();
-    private const int MaxMemoryCacheEntries = 12;
+    private const int MaxMemoryCacheEntries = 4;
     private static readonly Dictionary<ImageCacheKey, LinkedListNode<(ImageCacheKey Key, byte[] Payload)>> s_memoryCache = new(MaxMemoryCacheEntries);
     private static readonly LinkedList<(ImageCacheKey Key, byte[] Payload)> s_lruList = new();
 
@@ -374,8 +423,9 @@ public static partial class TerminalImageHelper
             stdout.Write(payload, 0, payload.Length);
             stdout.Flush();
         }
-        catch
+        catch (Exception ex)
         {
+            AppLogger.Debug("TerminalImage", $"Write chunk to stdout failed: {ex.Message}");
         }
     }
 
@@ -399,8 +449,9 @@ public static partial class TerminalImageHelper
             stdout.Write(bytes, 0, bytes.Length);
             stdout.Flush();
         }
-        catch
+        catch (Exception ex)
         {
+            AppLogger.Debug("TerminalImage", $"Write raw bytes to stdout failed: {ex.Message}");
         }
     }
 
@@ -415,8 +466,9 @@ public static partial class TerminalImageHelper
             byte[] cmd = Encoding.ASCII.GetBytes("\x1b_Ga=d,d=a,q=2\x1b\\");
             WriteRawBytesToTerminal(cmd);
         }
-        catch
+        catch (Exception ex)
         {
+            AppLogger.Debug("TerminalImage", $"ClearImages failed: {ex.Message}");
         }
     }
 }

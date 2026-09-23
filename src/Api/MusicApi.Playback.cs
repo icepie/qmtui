@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -11,29 +12,31 @@ public sealed partial class MusicApi
 {
     public static async Task<List<QualityOption>> ProbeSongQualitiesAsync(string songMid, string mediaMid = "", CancellationToken ct = default)
     {
+        return await ProbeSongQualitiesInternalAsync(songMid, mediaMid, canRetryWithRenew: true, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<List<QualityOption>> ProbeSongQualitiesInternalAsync(string songMid, string mediaMid, bool canRetryWithRenew, CancellationToken ct)
+    {
         if (string.IsNullOrEmpty(mediaMid)) mediaMid = songMid;
 
-        await LoginService.EnsureMusicKeyAsync(ct).ConfigureAwait(false);
+        await LoginService.EnsureMusicKeyAsync(false, ct).ConfigureAwait(false);
 
         var url = "https://u.y.qq.com/cgi-bin/musicu.fcg";
         var uin = string.IsNullOrEmpty(UserSession.Current.Uin) ? "0" : UserSession.Current.Uin;
+        var authst = !string.IsNullOrEmpty(UserSession.Current.MusicKey)
+            ? UserSession.Current.MusicKey
+            : (UserSession.Current.Cookies.TryGetValue("qm_keyst", out var mk) && !string.IsNullOrEmpty(mk)
+                ? mk
+                : (UserSession.Current.Cookies.TryGetValue("qqmusic_key", out var qmk) ? qmk : ""));
 
-        var requests = new (string Key, AudioQualityTier Tier, string Prefix, string Extension)[]
-        {
-            ("req_master", AudioQualityTier.Master, "AI00", ".flac"),
-            ("req_premium", AudioQualityTier.Premium, "Q000", ".flac"),
-            ("req_atmos51", AudioQualityTier.Atmos51, "Q001", ".flac"),
-            ("req_atmos71", AudioQualityTier.Atmos71, "Q003", ".ogg"),
-            ("req_dolby", AudioQualityTier.Dolby, "D004", ".mp4"),
-            ("req_hires", AudioQualityTier.HiRes, "RS01", ".flac"),
-            ("req_sq", AudioQualityTier.SQ, "F000", ".flac"),
-            ("req_320", AudioQualityTier.HQ, "M800", ".mp3"),
-            ("req_128", AudioQualityTier.Standard, "M500", ".mp3")
-        };
+        var requests = AudioQualityHelper.ProbeRequests;
         var requestJson = new StringBuilder(1536);
-        requestJson.Append("{\"comm\":{\"uin\":\"").Append(JsonEncodedText.Encode(uin)).Append("\",\"format\":\"json\",\"ct\":19,\"cv\":1,\"authst\":\"\"},")
+        requestJson.Append("{\"comm\":{\"uin\":\"").Append(JsonEncodedText.Encode(uin))
+            .Append("\",\"format\":\"json\",\"ct\":19,\"cv\":1,\"authst\":\"")
+            .Append(JsonEncodedText.Encode(authst)).Append("\"},")
             .Append("\"songinfo\":{\"module\":\"music.pf_song_detail_svr\",\"method\":\"get_song_detail_yqq\",\"param\":{\"song_mid\":\"")
             .Append(JsonEncodedText.Encode(songMid)).Append("\"}}");
+
         foreach (var request in requests)
         {
             requestJson.Append(",\"").Append(request.Key)
@@ -46,11 +49,12 @@ public sealed partial class MusicApi
         requestJson.Append('}');
         var jsonPayload = requestJson.ToString();
 
-        var options = new List<QualityOption>(requests.Length);
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Post, url);
             req.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+            req.Headers.TryAddWithoutValidation("Origin", "https://y.qq.com");
+            req.Headers.Referrer = new Uri("https://y.qq.com/");
 
             var cookieHeader = UserSession.Current.GetCookieHeader();
             if (!string.IsNullOrEmpty(cookieHeader))
@@ -62,108 +66,378 @@ public sealed partial class MusicApi
             var respStr = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
 
             using var doc = JsonDocument.Parse(respStr);
-            var root = doc.RootElement;
+            var options = ParseProbedQualities(doc.RootElement, requests);
 
-            long interval = 0;
-            long[] sizeNew = [];
-            long sizeDolby = 0;
-            long sizeHires = 0;
-            long sizeFlac = 0;
-            long size320 = 0;
-            long size128 = 0;
-
-            if (root.TryGetProperty("songinfo", out var songInfoObj) &&
-                songInfoObj.TryGetProperty("data", out var songData) &&
-                songData.TryGetProperty("track_info", out var trackInfo))
+            if (canRetryWithRenew && UserSession.Current.IsLoggedIn)
             {
-                if (trackInfo.TryGetProperty("interval", out var intervalProp)) intervalProp.TryGetInt64(out interval);
-                if (trackInfo.TryGetProperty("file", out var fileObj))
+                var hasVipSource = options.Any(o => o.Tier != AudioQualityTier.Standard && !string.IsNullOrEmpty(o.BitrateInfo));
+                var hasVipUrl = options.Any(o => o.Tier != AudioQualityTier.Standard && o.Available);
+                if (hasVipSource && !hasVipUrl)
                 {
-                    sizeDolby = ReadJsonInt64(fileObj, "size_dolby");
-                    sizeHires = ReadJsonInt64(fileObj, "size_hires");
-                    if (sizeHires == 0) sizeHires = ReadJsonInt64(fileObj, "size_96flac");
-                    if (sizeHires == 0) sizeHires = ReadJsonInt64(fileObj, "size_24bit");
-                    sizeFlac = ReadJsonInt64(fileObj, "size_flac");
-                    size320 = ReadJsonInt64(fileObj, "size_320mp3");
-                    size128 = ReadJsonInt64(fileObj, "size_128mp3");
-                    if (fileObj.TryGetProperty("size_new", out var values) && values.ValueKind == JsonValueKind.Array)
+                    AppLogger.Info("MusicApi", "ProbeSongQualities: VIP audio tracks exist but no valid VIP URL obtained, attempting token renewal...");
+                    var renewed = await LoginService.EnsureMusicKeyAsync(forceRefresh: true, ct).ConfigureAwait(false);
+                    if (renewed)
                     {
-                        sizeNew = values.EnumerateArray()
-                            .Select(value => value.TryGetInt64(out var size) ? size : 0)
-                            .ToArray();
+                        return await ProbeSongQualitiesInternalAsync(songMid, mediaMid, canRetryWithRenew: false, ct).ConfigureAwait(false);
                     }
                 }
             }
-            string? ExtractUrl(string reqKey)
-            {
-                if (root.TryGetProperty(reqKey, out var reqObj) &&
-                    reqObj.TryGetProperty("data", out var data))
-                {
-                    string? sip = null;
-                    if (data.TryGetProperty("sip", out var sips) && sips.ValueKind == JsonValueKind.Array && sips.GetArrayLength() > 0)
-                    {
-                        sip = sips[0].GetString();
-                    }
 
-                    if (data.TryGetProperty("midurlinfo", out var midUrlInfo) &&
-                        midUrlInfo.ValueKind == JsonValueKind.Array &&
-                        midUrlInfo.GetArrayLength() > 0)
-                    {
-                        var purl = midUrlInfo[0].TryGetProperty("purl", out var p) ? p.GetString() : null;
-                        if (!string.IsNullOrEmpty(sip) && !string.IsNullOrEmpty(purl) && purl.Length > 5)
-                        {
-                            return sip + purl;
-                        }
-                    }
-                }
-                return null;
-            }
+            await RefineQualityMetadataAsync(options, doc.RootElement, songMid, ct).ConfigureAwait(false);
 
-            var sizeByTier = new Dictionary<AudioQualityTier, long>
-            {
-                [AudioQualityTier.Master] = GetArrayValue(sizeNew, 0),
-                [AudioQualityTier.Premium] = GetArrayValue(sizeNew, 1),
-                [AudioQualityTier.Atmos51] = GetArrayValue(sizeNew, 2),
-                [AudioQualityTier.Atmos71] = GetArrayValue(sizeNew, 3),
-                [AudioQualityTier.Dolby] = sizeDolby,
-                [AudioQualityTier.HiRes] = sizeHires > 0 ? sizeHires : Math.Max(GetArrayValue(sizeNew, 11), GetArrayValue(sizeNew, 13)),
-                [AudioQualityTier.SQ] = sizeFlac > 0 ? sizeFlac : GetArrayValue(sizeNew, 12),
-                [AudioQualityTier.HQ] = size320 > 0 ? size320 : GetArrayValue(sizeNew, 3),
-                [AudioQualityTier.Standard] = size128
-            };
-
-            foreach (var request in requests)
-            {
-                var playUrl = ExtractUrl(request.Key);
-                var size = sizeByTier[request.Tier];
-                var available = !string.IsNullOrEmpty(playUrl) &&
-                    (request.Tier != AudioQualityTier.HiRes || sizeHires > 0);
-                var bitrate = size > 0 && interval > 0
-                    ? $"{(long)Math.Round((size * 8.0) / interval / 1000.0)}kbps"
-                    : "";
-                options.Add(new QualityOption(
-                    request.Tier,
-                    AudioQualityHelper.GetBadge(request.Tier),
-                    AudioQualityHelper.GetQualityName(request.Tier),
-                    AudioQualityHelper.GetDefaultSpec(request.Tier),
-                    bitrate,
-                    available,
-                    available ? playUrl : null));
-            }
+            return options;
         }
         catch (Exception ex)
         {
             AppLogger.Error("MusicApi", "ProbeSongQualitiesAsync exception", ex);
+            var options = new List<QualityOption>(AudioQualityHelper.SelectionOrder.Count);
             foreach (var tier in AudioQualityHelper.SelectionOrder)
             {
                 options.Add(new QualityOption(tier, AudioQualityHelper.GetBadge(tier), AudioQualityHelper.GetQualityName(tier), AudioQualityHelper.GetDefaultSpec(tier), "", false));
             }
+            return options;
+        }
+    }
+
+    internal static List<QualityOption> ParseProbedQualities(JsonElement root, (string Key, AudioQualityTier Tier, string Prefix, string Extension)[] requests)
+    {
+        long interval = 0;
+        long[] sizeNew = [];
+        long sizeDolby = 0;
+        long hiresRaw = 0;
+        long flacSize = 0;
+        long size320 = 0;
+        long size128 = 0;
+        int hiresSample = 0;
+        int hiresBitdepth = 0;
+        bool hasFileObj = false;
+
+        if (root.TryGetProperty("songinfo", out var songInfoObj) &&
+            songInfoObj.TryGetProperty("data", out var songData) &&
+            songData.TryGetProperty("track_info", out var trackInfo))
+        {
+            if (trackInfo.TryGetProperty("interval", out var intervalProp)) intervalProp.TryGetInt64(out interval);
+            if (trackInfo.TryGetProperty("file", out var fileObj))
+            {
+                hasFileObj = true;
+                if (fileObj.TryGetProperty("size_new", out var values) && values.ValueKind == JsonValueKind.Array)
+                {
+                    sizeNew = values.EnumerateArray()
+                        .Select(value => value.TryGetInt64(out var size) ? size : 0)
+                        .ToArray();
+                }
+
+                sizeDolby = ReadJsonInt64(fileObj, "size_dolby");
+
+                hiresRaw = ReadJsonInt64(fileObj, "size_hires");
+                if (hiresRaw == 0) hiresRaw = ReadJsonInt64(fileObj, "size_96flac");
+                if (hiresRaw == 0) hiresRaw = ReadJsonInt64(fileObj, "size_24bit");
+                if (hiresRaw == 0) hiresRaw = GetArrayValue(sizeNew, 11);
+
+                flacSize = ReadJsonInt64(fileObj, "size_flac");
+                if (flacSize == 0) flacSize = GetArrayValue(sizeNew, 12);
+
+                size320 = ReadJsonInt64(fileObj, "size_320mp3");
+                if (size320 == 0) size320 = GetArrayValue(sizeNew, 3);
+
+                size128 = ReadJsonInt64(fileObj, "size_128mp3");
+
+                hiresSample = (int)ReadJsonInt64(fileObj, "hires_sample");
+                hiresBitdepth = (int)ReadJsonInt64(fileObj, "hires_bitdepth");
+            }
+        }
+
+        var isTrueHiRes = hiresRaw > 0 || hiresSample > 48000 || hiresBitdepth > 16;
+        var hiResSize = isTrueHiRes ? (hiresRaw > 0 ? hiresRaw : flacSize) : 0L;
+
+        var sizeByTier = new Dictionary<AudioQualityTier, long>
+        {
+            [AudioQualityTier.Master] = GetArrayValue(sizeNew, 0),
+            [AudioQualityTier.Premium] = GetArrayValue(sizeNew, 1),
+            [AudioQualityTier.Atmos] = GetArrayValue(sizeNew, 2),
+            [AudioQualityTier.Dolby] = sizeDolby,
+            [AudioQualityTier.HiRes] = hiResSize,
+            [AudioQualityTier.SQ] = flacSize,
+            [AudioQualityTier.HQ] = size320,
+            [AudioQualityTier.Standard] = size128
+        };
+
+        (string? Url, bool HasValidUrl) ExtractUrl(string reqKey, string prefix)
+        {
+            if (root.TryGetProperty(reqKey, out var reqObj) &&
+                reqObj.TryGetProperty("data", out var data))
+            {
+                string? sip = null;
+                if (data.TryGetProperty("sip", out var sips) && sips.ValueKind == JsonValueKind.Array && sips.GetArrayLength() > 0)
+                {
+                    sip = sips[0].GetString();
+                }
+
+                if (data.TryGetProperty("midurlinfo", out var midUrlInfo) &&
+                    midUrlInfo.ValueKind == JsonValueKind.Array &&
+                    midUrlInfo.GetArrayLength() > 0)
+                {
+                    var info = midUrlInfo[0];
+                    var purl = info.TryGetProperty("purl", out var p) ? p.GetString() : null;
+                    var result = info.TryGetProperty("result", out var r) && r.TryGetInt32(out var res) ? res : 0;
+
+                    var hasValid = !string.IsNullOrWhiteSpace(purl) &&
+                                   purl.Length > 5 &&
+                                   result == 0 &&
+                                   !string.IsNullOrEmpty(sip) &&
+                                   purl.Contains(prefix, StringComparison.OrdinalIgnoreCase);
+
+                    if (hasValid && purl != null)
+                    {
+                        return (sip + purl, true);
+                    }
+                }
+            }
+            return (null, false);
+        }
+
+        var options = new List<QualityOption>(requests.Length);
+        foreach (var request in requests)
+        {
+            var (playUrl, hasValidUrl) = ExtractUrl(request.Key, request.Prefix);
+            var size = sizeByTier.GetValueOrDefault(request.Tier, 0L);
+
+            bool available;
+            if (request.Tier == AudioQualityTier.Dolby)
+            {
+                available = sizeDolby > 0 && hasValidUrl;
+            }
+            else if (hasFileObj)
+            {
+                if (request.Tier == AudioQualityTier.HiRes)
+                {
+                    available = isTrueHiRes && size > 0 && hasValidUrl;
+                }
+                else
+                {
+                    available = size > 0 && hasValidUrl;
+                }
+            }
+            else
+            {
+                available = hasValidUrl;
+            }
+
+            var spec = AudioQualityHelper.GetDefaultSpec(request.Tier);
+            if (request.Tier == AudioQualityTier.HiRes && (hiresSample > 0 || hiresBitdepth > 0))
+            {
+                var depth = hiresBitdepth > 0 ? hiresBitdepth : 24;
+                var rate = hiresSample > 0 ? hiresSample / 1000 : 96;
+                spec = $"{depth}bit / {rate}kHz";
+            }
+            else if (request.Tier == AudioQualityTier.Master && (hiresSample > 0 || hiresBitdepth > 0))
+            {
+                var depth = hiresBitdepth > 0 ? hiresBitdepth : 24;
+                var rate = hiresSample > 0 ? hiresSample / 1000 : 192;
+                spec = $"{depth}bit / {rate}kHz";
+            }
+
+            var bitrate = size > 0 && interval > 0
+                ? $"{(long)Math.Round((size * 8.0) / interval / 1000.0)}kbps"
+                : "";
+
+            options.Add(new QualityOption(
+                request.Tier,
+                AudioQualityHelper.GetBadge(request.Tier),
+                AudioQualityHelper.GetQualityName(request.Tier),
+                spec,
+                bitrate,
+                available,
+                available ? playUrl : null,
+                size));
         }
 
         return options;
     }
 
     /// <summary>
+
+    private static async Task RefineQualityMetadataAsync(List<QualityOption> options, JsonElement root, string songMid, CancellationToken ct)
+    {
+        long interval = 0;
+        long flacSize = 0;
+        if (root.TryGetProperty("songinfo", out var si) &&
+            si.TryGetProperty("data", out var sd) &&
+            sd.TryGetProperty("track_info", out var ti))
+        {
+            if (ti.TryGetProperty("interval", out var iv)) iv.TryGetInt64(out interval);
+            if (ti.TryGetProperty("file", out var fi) && fi.TryGetProperty("size_flac", out var sf)) sf.TryGetInt64(out flacSize);
+        }
+
+        var tasks = new List<Task>();
+        for (int i = 0; i < options.Count; i++)
+        {
+            var index = i;
+            var opt = options[index];
+            if (!opt.Available) continue;
+
+            tasks.Add(Task.Run(async () =>
+            {
+                try
+                {
+                    var isFlac = AudioQualityHelper.GetExtension(opt.Tier) == ".flac";
+                    string? newSpec = null;
+                    long realSize = opt.FileSizeBytes;
+
+                    // 1. 优先检查本地磁盘缓存
+                    if (!string.IsNullOrEmpty(songMid))
+                    {
+                        var localCached = AudioCacheService.GetCachedAudioPath(songMid, opt.Tier);
+                        if (!string.IsNullOrEmpty(localCached) && File.Exists(localCached))
+                        {
+                            var fi = new FileInfo(localCached);
+                            if (realSize <= 0 && fi.Length > 0)
+                            {
+                                realSize = fi.Length;
+                            }
+
+                            if (isFlac && fi.Length >= 42)
+                            {
+                                using var fs = File.OpenRead(localCached);
+                                var buf = new byte[42];
+                                int read = await fs.ReadAsync(buf.AsMemory(0, 42), ct).ConfigureAwait(false);
+                                if (read == 42 && AudioQualityHelper.TryParseFlacStreamInfo(buf, out var sr, out var bps, out var ch))
+                                {
+                                    newSpec = AudioQualityHelper.FormatAudioSpec(sr, bps, ch, opt.Tier);
+                                }
+                            }
+                        }
+                    }
+
+                    // 2. 若本地未命中 FLAC 规格且存在播放直链，通过 Range: bytes=0-41 嗅探
+                    if (isFlac && newSpec == null && !string.IsNullOrEmpty(opt.PlayUrl))
+                    {
+                        var probeResult = await TryProbeFlacRangeAsync(opt.PlayUrl, ct).ConfigureAwait(false);
+                        if (probeResult != null)
+                        {
+                            if (probeResult.Value.SampleRate > 0)
+                            {
+                                newSpec = AudioQualityHelper.FormatAudioSpec(
+                                    probeResult.Value.SampleRate,
+                                    probeResult.Value.BitsPerSample,
+                                    probeResult.Value.Channels,
+                                    opt.Tier);
+                            }
+                            if (realSize <= 0 && probeResult.Value.TotalLength > 0)
+                            {
+                                realSize = probeResult.Value.TotalLength;
+                            }
+                        }
+                    }
+
+                    // 3. 兜底处理：若仍未获取到有效文件大小且有直链，使用 HEAD 请求探测 Content-Length
+                    bool needsSizeCorrection = (opt.Tier == AudioQualityTier.HiRes && (realSize <= 0 || (flacSize > 0 && realSize <= flacSize)))
+                                               || realSize <= 0;
+                    if (needsSizeCorrection && !string.IsNullOrEmpty(opt.PlayUrl))
+                    {
+                        var fetchedLength = await TryFetchContentLengthAsync(opt.PlayUrl, ct).ConfigureAwait(false);
+                        if (fetchedLength > 0)
+                        {
+                            realSize = fetchedLength;
+                        }
+                    }
+
+                    // 4. 组装更新后的 QualityOption
+                    var updated = opt;
+                    if (realSize > 0 && realSize != opt.FileSizeBytes)
+                    {
+                        var bitrate = opt.BitrateInfo;
+                        if (interval > 0)
+                        {
+                            bitrate = $"{(long)Math.Round((realSize * 8.0) / interval / 1000.0)}kbps";
+                        }
+                        updated = updated with { FileSizeBytes = realSize, BitrateInfo = bitrate };
+                    }
+                    if (!string.IsNullOrEmpty(newSpec) && newSpec != opt.Spec)
+                    {
+                        updated = updated with { Spec = newSpec };
+                    }
+
+                    lock (options)
+                    {
+                        options[index] = updated;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.Warn("MusicApi", $"Failed to refine metadata for tier {opt.Tier}: {ex.Message}");
+                }
+            }, ct));
+        }
+
+        if (tasks.Count > 0)
+        {
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<(int SampleRate, int BitsPerSample, int Channels, long TotalLength)?> TryProbeFlacRangeAsync(string url, CancellationToken ct)
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.TryAddWithoutValidation("Referer", "https://y.qq.com/");
+            req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 41);
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(3));
+
+            using var resp = await s_httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) return null;
+
+            long totalLength = 0;
+            if (resp.Content.Headers.ContentRange?.Length is { } len && len > 0)
+            {
+                totalLength = len;
+            }
+
+            var buffer = new byte[42];
+            using var stream = await resp.Content.ReadAsStreamAsync(cts.Token).ConfigureAwait(false);
+            int totalRead = 0;
+            while (totalRead < 42)
+            {
+                int r = await stream.ReadAsync(buffer.AsMemory(totalRead, 42 - totalRead), cts.Token).ConfigureAwait(false);
+                if (r <= 0) break;
+                totalRead += r;
+            }
+
+            if (totalRead == 42 && AudioQualityHelper.TryParseFlacStreamInfo(buffer, out var sampleRate, out var bitsPerSample, out var channels))
+            {
+                return (sampleRate, bitsPerSample, channels, totalLength);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("MusicApi", $"TryProbeFlacRangeAsync error for {url}: {ex.Message}");
+        }
+        return null;
+    }
+
+    private static async Task<long> TryFetchContentLengthAsync(string url, CancellationToken ct)
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Head, url);
+            req.Headers.TryAddWithoutValidation("Referer", "https://y.qq.com/");
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(3));
+            using var resp = await s_httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
+            if (resp.IsSuccessStatusCode && resp.Content.Headers.ContentLength is { } cl && cl > 0)
+            {
+                return cl;
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("MusicApi", $"Failed to fetch Content-Length for {url}: {ex.Message}");
+        }
+        return 0;
+    }
     /// 根据用户指定或偏好的音质获取直链，支持智能梯度回退
     /// </summary>
     public static async Task<(string? Url, string Quality, AudioQualityTier Tier)> GetPlayUrlForTierAsync(string songMid, string mediaMid = "", AudioQualityTier preferred = AudioQualityTier.SQ, CancellationToken ct = default)
@@ -351,9 +625,6 @@ public sealed partial class MusicApi
     }
 
     /// <summary>
-    /// 获取同步 LRC 歌词与翻译（解析 Base64 并进行双语时间轴对齐）
-    /// </summary>
-/// <summary>
     /// 调用 PlayLyricInfo，取回原始的 lyric/trans 字段（未解码）。
     /// </summary>
     private static async Task<(string Lyric, string Trans)> FetchLyricFieldsAsync(string songMid, int qrc, CancellationToken ct)
@@ -389,6 +660,13 @@ public sealed partial class MusicApi
             return cached;
         }
 
+        // 统一母本缓存不带逐字时间轴，放在其后读出，避免遮蔽上面的 QRC 逐字歌词
+        var masterCached = LocalLyricAutoMatcher.ReadMasterCacheByMid(songMid);
+        if (masterCached != null && masterCached.Lines.Count > 0)
+        {
+            return masterCached.Lines.ConvertAll(l => l.ToDomain());
+        }
+
         try
         {
             // 1. 先请求 QRC（qrc:1 时 lyric 字段是十六进制密文），拿到逐字歌词
@@ -401,6 +679,7 @@ public sealed partial class MusicApi
                     LyricParser.DecodeBase64(qrcTransField));
                 if (qrcLines.Count > 0 && qrcLines.Any(line => line.Words is { Count: > 0 }))
                 {
+                    // 母本库的 CachedLyricLineItem 不保存 Words，QRC 只写 MetadataCacheService
                     MetadataCacheService.SaveLyrics(songMid, qrcLines);
                     return qrcLines;
                 }
@@ -414,6 +693,7 @@ public sealed partial class MusicApi
             {
                 var merged = LyricParser.MergeLyrics(rawLyric, rawTrans);
                 MetadataCacheService.SaveLyrics(songMid, merged);
+                LocalLyricAutoMatcher.SaveUnifiedCache(songMid, "", "", "", merged);
                 return merged;
             }
         }
@@ -422,7 +702,7 @@ public sealed partial class MusicApi
             AppLogger.Error("MusicApi", "GetLyricsAsync PlayLyricInfo error, falling back", ex);
         }
 
-        // 2. 兜底备用：传统 fcg_query_lyric_new.fcg 接口
+        // 3. 兜底备用：传统 fcg_query_lyric_new.fcg 接口
         try
         {
             var url = $"https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid={songMid}&format=json&nobase64=1";
@@ -437,6 +717,7 @@ public sealed partial class MusicApi
                 {
                     var merged = LyricParser.MergeLyrics(rawLrc, "");
                     MetadataCacheService.SaveLyrics(songMid, merged);
+                    LocalLyricAutoMatcher.SaveUnifiedCache(songMid, "", "", "", merged);
                     return merged;
                 }
             }

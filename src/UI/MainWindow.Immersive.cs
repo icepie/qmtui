@@ -39,6 +39,7 @@ public sealed partial class MainWindow
         _userStatusBtn.Visible = !enable;
         _recognizeBtn.Visible = !enable;
         _webBtn.Visible = !enable;
+        UpdateTopContextButtons();
 
         // 2. 下方控制栏与快捷栏显隐
         _controlBar.Visible = !enable;
@@ -216,6 +217,7 @@ public sealed partial class MainWindow
             _standaloneWebServer.CurrentPlaybackMode = mode;
             _standaloneWebServer.BroadcastState("mode_change");
         }
+        BroadcastConnectPlayerState();
     }
 
     private long _lastToggleNowPlayingTicks;
@@ -250,6 +252,9 @@ public sealed partial class MainWindow
         _lyricFrame.Visible = false;
         _searchLabel.Visible = false;
         _searchField.Visible = false;
+        _searchSongsBtn.Visible = false;
+        _searchPlaylistsBtn.Visible = false;
+        _searchAlbumsBtn.Visible = false;
         _userStatusBtn.Visible = false;
         _recognizeBtn.Visible = false;
         _webBtn.Visible = false;
@@ -283,6 +288,7 @@ public sealed partial class MainWindow
         _recognizeBtn.Visible = !_isImmersiveMode;
         _webBtn.Visible = !_isImmersiveMode;
         _hotkeyHintLabel.Visible = !_isImmersiveMode;
+        UpdateTopContextButtons();
 
         _isSearchActive = false;
         _songListView.SetFocusToList();
@@ -305,6 +311,9 @@ public sealed partial class MainWindow
         _lyricFrame.Visible = false;
         _searchLabel.Visible = false;
         _searchField.Visible = false;
+        _searchSongsBtn.Visible = false;
+        _searchPlaylistsBtn.Visible = false;
+        _searchAlbumsBtn.Visible = false;
         _userStatusBtn.Visible = false;
         _recognizeBtn.Visible = false;
         _webBtn.Visible = false;
@@ -366,6 +375,7 @@ public sealed partial class MainWindow
             _sidebarTitleLabel.Visible = true;
             _songListTitleLabel.Visible = true;
             _lyricTitleLabel.Visible = true;
+            UpdateTopContextButtons();
             if (_artistAlbumDetailView.Visible)
             {
                 _artistAlbumDetailView.OnActivated();
@@ -380,6 +390,18 @@ public sealed partial class MainWindow
         UpdateFrameBorderHighlights();
         SetNeedsDraw();
         AppLogger.Info("MainWindow", "Exited AOD background display mode");
+    }
+
+    private void ToggleAodMode()
+    {
+        if (_isAodMode)
+        {
+            ExitAodMode();
+        }
+        else
+        {
+            EnterAodMode();
+        }
     }
 
     private async Task HandleRealEscapeKeyAsync()
@@ -403,11 +425,25 @@ public sealed partial class MainWindow
         }
         else if (_currentDrilldownPlaylist != null)
         {
-            await LoadPlaylistsAsync();
+            if (_searchCategory == SearchCategory.Playlists && !string.IsNullOrEmpty(_lastSearchQuery))
+            {
+                await ExecuteSearchAsync();
+            }
+            else
+            {
+                await LoadPlaylistsAsync();
+            }
         }
         else if (_currentDrilldownAlbum != null)
         {
-            await LoadFavoriteAlbumsAsync();
+            if (_searchCategory == SearchCategory.Albums && !string.IsNullOrEmpty(_lastSearchQuery))
+            {
+                await ExecuteSearchAsync();
+            }
+            else
+            {
+                await LoadFavoriteAlbumsAsync();
+            }
         }
         else if (_currentViewMode == ViewMode.WebDav && !_isWebDavFlatMode && _webDavPathHistory.Count > 0)
         {

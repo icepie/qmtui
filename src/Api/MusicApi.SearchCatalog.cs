@@ -37,7 +37,7 @@ public sealed partial class MusicApi
 
                     int songCount = (int)ReadLong(item, "song_count", "songnum", "songNum");
                     string cover = ReadText(item, "imgurl", "picurl", "logo");
-                    playlists.Add(new Playlist(0, StripSearchMarkup(name), songCount, tid, IsFav: true, cover));
+                    playlists.Add(new Playlist(tid, StripSearchMarkup(name), songCount, tid, IsFav: true, cover));
                 }
                 return playlists;
             }, ct).ConfigureAwait(false);

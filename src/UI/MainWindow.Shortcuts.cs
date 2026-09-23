@@ -269,37 +269,41 @@ public sealed partial class MainWindow
                 Application.Invoke(UpdateFrameBorderHighlights);
             }
 
-            // 6. 只有未在搜索框内打字时，按 F3 或 '/' 才作为激活搜索框的快捷键（大播放界面下禁止唤出搜索）
-            if (k == Key.F3 || k.AsRune.Value == '/')
+            // 6. 只有未在搜索框内打字时，按 F3、'/' 或 Ctrl+V 才作为激活搜索框的快捷键（大播放界面下禁止唤出搜索）
+            if (k == Key.F3 || k.AsRune.Value == '/' || k == Key.V.WithCtrl)
             {
                 if (_isNowPlayingViewActive) return;
                 k.Handled = true;
                 _searchField.CanFocus = true;
                 _isSearchActive = true;
                 _searchField.SetFocus();
+                if (k == Key.V.WithCtrl)
+                {
+                    _searchField.PasteFromClipboard(preferPrimary: false);
+                }
                 return;
             }
 
             char c = char.ToUpperInvariant((char)k.AsRune.Value);
 
-            if (_currentViewMode == ViewMode.ArtistDetail && !_isSearchActive)
+            if (!_isSearchActive && !_searchField.HasFocus)
             {
-                if (k == Key.D1 || c == '1')
+                if ((k == Key.D1 || c == '1') && _searchSongsBtn.Visible)
                 {
                     k.Handled = true;
-                    await ToggleSingerSubModeAsync();
+                    await OnContextAction1Async();
                     return;
                 }
-                if (k == Key.D2 || c == '2')
+                if ((k == Key.D2 || c == '2') && _searchPlaylistsBtn.Visible)
                 {
                     k.Handled = true;
-                    await ToggleSingerSongOrderAsync();
+                    await OnContextAction2Async();
                     return;
                 }
-                if (k == Key.D3 || c == '3')
+                if ((k == Key.D3 || c == '3') && _searchAlbumsBtn.Visible)
                 {
                     k.Handled = true;
-                    await ToggleSingerFavoriteAsync();
+                    await OnContextAction3Async();
                     return;
                 }
             }
@@ -872,6 +876,21 @@ public sealed partial class MainWindow
                     _standaloneWebServer?.Stop();
                     _standaloneWebServer?.Dispose();
                     _standaloneWebServer = null;
+                }
+                catch {}
+                try
+                {
+                    _connectMdns?.Dispose();
+                    _connectMdns = null;
+                    if (_connectServer != null)
+                    {
+                        if (_connectServer.IsRunning)
+                        {
+                            _connectServer.Stop();
+                        }
+                        _connectServer.Dispose();
+                        _connectServer = null;
+                    }
                 }
                 catch {}
                 _player.Dispose();

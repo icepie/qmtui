@@ -50,6 +50,9 @@ public static class MikuTheme
     public static Scheme FrameBorderDim { get; } = CreateFrameBorderDimScheme();
     public static Scheme FrameBorderActive { get; } = CreateFrameBorderActiveScheme();
     public static Scheme TitleHighlight { get; } = CreateTitleHighlightScheme();
+    public static Scheme QrCode { get; } = CreateQrCodeScheme();
+    public static Scheme SearchCategoryActive { get; } = CreateSearchCategoryActiveScheme();
+    public static Scheme SearchCategoryDim { get; } = CreateSearchCategoryDimScheme();
 
     private static Scheme CreateBaseScheme()
     {
@@ -186,11 +189,20 @@ public static class MikuTheme
 
     public static void Apply()
     {
-        // 将按钮外框括号统一为 ASCII 简洁半角中括号 [ ]
-        Glyphs.LeftBracket = new Rune('[');
-        Glyphs.RightBracket = new Rune(']');
-        Terminal.Gui.Views.Button.DefaultShadow = ShadowStyles.None;
-        Terminal.Gui.Views.Dialog.DefaultShadow = ShadowStyles.None;
+        // 将按钮外框括号统一为 ASCII 简洁半角中括号 [ ]，去除默认投影
+        GlyphSettings.Current = GlyphSettings.Current with
+        {
+            LeftBracket = new Rune('['),
+            RightBracket = new Rune(']')
+        };
+        ButtonSettings.Current = ButtonSettings.Current with
+        {
+            DefaultShadow = ShadowStyles.None
+        };
+        DialogSettings.Current = DialogSettings.Current with
+        {
+            DefaultShadow = ShadowStyles.None
+        };
         SchemeManager.AddScheme("Base", Base);
         SchemeManager.AddScheme("Dialog", Dialog);
         SchemeManager.AddScheme("PlayerBar", PlayerBar);
@@ -199,6 +211,56 @@ public static class MikuTheme
         SchemeManager.AddScheme("FrameBorderDim", FrameBorderDim);
         SchemeManager.AddScheme("FrameBorderActive", FrameBorderActive);
         SchemeManager.AddScheme("TitleHighlight", TitleHighlight);
+        SchemeManager.AddScheme("QrCode", QrCode);
+    }
+
+    private static Scheme CreateQrCodeScheme()
+    {
+        var attr = new Attribute(Color.Black, Color.White);
+        return new Scheme
+        {
+            Normal    = attr,
+            Focus     = attr,
+            HotNormal = attr,
+            HotFocus  = attr,
+            Disabled  = attr,
+            Highlight = attr,
+            Active    = attr,
+            ReadOnly  = attr,
+            Editable  = attr
+        };
+    }
+
+    private static Scheme CreateSearchCategoryActiveScheme()
+    {
+        return new Scheme
+        {
+            Normal    = new Attribute(Color.White,    QqGreenDark),
+            Focus     = new Attribute(Color.White,    QqGreenPrimary),
+            HotNormal = new Attribute(QqGreenLight,   QqGreenDark),
+            HotFocus  = new Attribute(Color.White,    QqGreenPrimary),
+            Disabled  = new Attribute(MikuTextMuted,  Color.None),
+            Highlight = new Attribute(QqGreenLight,   QqGreenDark),
+            Active    = new Attribute(Color.White,    QqGreenDark),
+            ReadOnly  = new Attribute(Color.White,    QqGreenDark),
+            Editable  = new Attribute(Color.White,    QqGreenDark)
+        };
+    }
+
+    private static Scheme CreateSearchCategoryDimScheme()
+    {
+        return new Scheme
+        {
+            Normal    = new Attribute(MikuTextMuted,  Color.None),
+            Focus     = new Attribute(QqGreenLight,   Color.None),
+            HotNormal = new Attribute(MikuTextSub,    Color.None),
+            HotFocus  = new Attribute(Color.White,    QqGreenPrimary),
+            Disabled  = new Attribute(MikuTextMuted,  Color.None),
+            Highlight = new Attribute(MikuTextMuted,  Color.None),
+            Active    = new Attribute(MikuTextMuted,  Color.None),
+            ReadOnly  = new Attribute(MikuTextMuted,  Color.None),
+            Editable  = new Attribute(MikuTextMuted,  Color.None)
+        };
     }
 
     public static void ApplyTo(View view, Scheme? scheme = null)

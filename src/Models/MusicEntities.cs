@@ -10,7 +10,8 @@ public sealed record Album(
     string Artist,
     int SongCount,
     string CoverUrl = "",
-    long PubTime = 0
+    long PubTime = 0,
+    string PublishDate = ""
 );
 
 /// <summary>
@@ -23,7 +24,8 @@ public sealed record AlbumDetail(
     string PublishDate,
     string Company,
     string Description,
-    List<Song> Songs
+    List<Song> Songs,
+    long Id = 0
 );
 
 /// <summary>

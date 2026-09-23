@@ -22,16 +22,22 @@
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
     <IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies>
-    <DefaultItemExcludes>$(DefaultItemExcludes);tui/**;tests/**;experimental/**;old/**;web/**;www/**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);tui/**;tests/**;experimental/**;old/**;web/**;www/**;**/*.raw.cs</DefaultItemExcludes>
     <InvariantGlobalization>true</InvariantGlobalization>
     <LinkerFlavor Condition="'$(RuntimeIdentifier)' == 'linux-arm64'">lld</LinkerFlavor>
   </PropertyGroup>
 
+  <Target Name="SyncAcousticPipeline" BeforeTargets="BeforeBuild" Condition="Exists('src/Services/AudioRecognition/AcousticFingerprintExtractor.raw.cs') And Exists('.bin/codegen_acoustic.py')">
+    <Exec Command="python3 .bin/codegen_acoustic.py" />
+  </Target>
+
   <ItemGroup>
-    <PackageReference Include="Terminal.Gui" Version="2.4.17" />
-    <PackageReference Include="z440.atl.core" Version="7.16.0" />
+    <PackageReference Include="Terminal.Gui" Version="2.5.0" />
+    <PackageReference Include="z440.atl.core" Version="7.17.0" />
     <PackageReference Include="StbImageSharp" Version="2.30.16" />
     <PackageReference Include="StbImageWriteSharp" Version="1.16.7" />
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
+    <PackageReference Include="ZXing.Net" Version="0.16.11" />
   </ItemGroup>
 
   <ItemGroup>

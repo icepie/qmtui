@@ -9,7 +9,37 @@ namespace QmTui.Api;
 
 public sealed partial class MusicApi
 {
-    public static async Task<List<Song>> GetDailyRecommendSongsAsync(CancellationToken ct = default)
+    public static Task<List<Song>> GetDailyRecommendSongsAsync(CancellationToken ct = default) =>
+        GetFeedRecommendDissSongsAsync(
+            title => title.Contains("30首", StringComparison.OrdinalIgnoreCase) ||
+                     title.Contains("每日30", StringComparison.OrdinalIgnoreCase) ||
+                     title.Equals("每日30首", StringComparison.OrdinalIgnoreCase),
+            fallbackDisstid: 0,
+            songNum: 30,
+            featureName: "每日30首",
+            getCache: MetadataCacheService.GetDailyRecommend,
+            saveCache: MetadataCacheService.SaveDailyRecommend,
+            ct: ct);
+
+    public static Task<List<Song>> GetMillionRecommendSongsAsync(CancellationToken ct = default) =>
+        GetFeedRecommendDissSongsAsync(
+            title => title.Contains("百万", StringComparison.OrdinalIgnoreCase) ||
+                     title.Equals("百万收藏", StringComparison.OrdinalIgnoreCase),
+            fallbackDisstid: 211111L,
+            songNum: 50,
+            featureName: "百万收藏",
+            getCache: MetadataCacheService.GetMillionRecommend,
+            saveCache: MetadataCacheService.SaveMillionRecommend,
+            ct: ct);
+
+    private static async Task<List<Song>> GetFeedRecommendDissSongsAsync(
+        Func<string, bool> cardTitleMatcher,
+        long fallbackDisstid,
+        int songNum,
+        string featureName,
+        Func<string, string, DailyRecommendCache?> getCache,
+        Action<string, string, List<Song>> saveCache,
+        CancellationToken ct = default)
     {
         if (!UserSession.Current.IsLoggedIn) return [];
 
@@ -17,12 +47,12 @@ public sealed partial class MusicApi
 
         var uin = UserSession.Current.Uin;
 
-        // 「每日30首」一天内不会变，命中缓存就不必再走 QQ 的多次往返（要十几秒）
+        // 「每日30首」「百万收藏」一天内不会变，命中缓存就不必再走 QQ 的多次往返（要十几秒）
         var cacheDate = DateTime.Now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
-        var cached = MetadataCacheService.GetDailyRecommend(uin, cacheDate);
+        var cached = getCache(uin, cacheDate);
         if (cached is { Songs.Count: > 0 })
         {
-            AppLogger.Info("MusicApi", $"GetDailyRecommendSongsAsync: hit cache for {cacheDate}");
+            AppLogger.Info("MusicApi", $"{featureName}: hit cache for {cacheDate}");
             return cached.Songs;
         }
 
@@ -30,12 +60,12 @@ public sealed partial class MusicApi
 
         try
         {
-            // 阶段一：通过推荐 Feed 获取今日“每日30首”歌单专属 ID (disstid)
+            // 阶段一：通过推荐 Feed 获取专属歌单 ID (disstid)
             var feedPayload = $"{{\"comm\":{{\"uin\":\"{uin}\",\"format\":\"json\",\"ct\":19,\"cv\":1,\"authst\":\"\"}}," +
                 $"\"feed\":{{\"module\":\"music.recommend.RecommendFeed\",\"method\":\"get_recommend_feed\"," +
                 $"\"param\":{{\"direction\":0,\"page\":1,\"s_num\":0,\"v_cache\":[]}}}}}}";
 
-            long dailyDisstid = 0;
+            long targetDisstid = 0;
             using (var req = new HttpRequestMessage(HttpMethod.Post, url))
             {
                 req.Content = new StringContent(feedPayload, Encoding.UTF8, "application/json");
@@ -63,43 +93,51 @@ public sealed partial class MusicApi
                                     foreach (var card in cards.EnumerateArray())
                                     {
                                         var title = card.TryGetProperty("title", out var tProp) ? tProp.GetString() ?? "" : "";
-                                        if (title.Contains("30首") || title.Contains("每日30") || title == "每日30首")
+                                        if (cardTitleMatcher(title))
                                         {
                                             if (card.TryGetProperty("id", out var idProp))
                                             {
                                                 if (idProp.ValueKind == JsonValueKind.Number)
                                                 {
-                                                    dailyDisstid = idProp.GetInt64();
+                                                    targetDisstid = idProp.GetInt64();
                                                 }
                                                 else if (idProp.ValueKind == JsonValueKind.String && long.TryParse(idProp.GetString(), out var parsedId))
                                                 {
-                                                    dailyDisstid = parsedId;
+                                                    targetDisstid = parsedId;
                                                 }
                                             }
-                                            if (dailyDisstid > 0) break;
+                                            if (targetDisstid > 0) break;
                                         }
                                     }
                                 }
-                                if (dailyDisstid > 0) break;
+                                if (targetDisstid > 0) break;
                             }
                         }
-                        if (dailyDisstid > 0) break;
+                        if (targetDisstid > 0) break;
                     }
                 }
             }
 
-            if (dailyDisstid <= 0)
+            if (targetDisstid <= 0)
             {
-                AppLogger.Warn("MusicApi", "GetDailyRecommendSongsAsync: failed to locate 每日30首 card in feed.");
-                return [];
+                if (fallbackDisstid > 0)
+                {
+                    targetDisstid = fallbackDisstid;
+                    AppLogger.Info("MusicApi", $"{featureName}: fallback to default disstid={fallbackDisstid}");
+                }
+                else
+                {
+                    AppLogger.Warn("MusicApi", $"{featureName}: failed to locate matching card in feed and no fallback provided.");
+                    return [];
+                }
             }
 
-            AppLogger.Info("MusicApi", $"GetDailyRecommendSongsAsync: found daily disstid={dailyDisstid}, requesting songlist...");
+            AppLogger.Info("MusicApi", $"{featureName}: found disstid={targetDisstid}, requesting songlist...");
 
-            // 阶段二：通过 uniform_get_Dissinfo 拉取该专属推荐歌单的全部歌曲（30首）
+            // 阶段二：通过 uniform_get_Dissinfo 拉取该专属推荐歌单曲目
             var dissPayload = $"{{\"comm\":{{\"uin\":\"{uin}\",\"format\":\"json\",\"ct\":19,\"cv\":1,\"authst\":\"\"}}," +
                 $"\"req_diss\":{{\"module\":\"music.srfDissInfo.aiDissInfo\",\"method\":\"uniform_get_Dissinfo\"," +
-                $"\"param\":{{\"disstid\":{dailyDisstid},\"userinfo\":1,\"tag\":1}}}}}}";
+                $"\"param\":{{\"disstid\":{targetDisstid},\"userinfo\":1,\"tag\":1,\"song_begin\":0,\"song_num\":{songNum}}}}}}}";
 
             using (var req = new HttpRequestMessage(HttpMethod.Post, url))
             {
@@ -112,21 +150,20 @@ public sealed partial class MusicApi
 
                 using var doc = JsonDocument.Parse(json);
                 var root = doc.RootElement;
-                int initialCapacity = 30;
                 if (root.TryGetProperty("req_diss", out var dissObj) &&
                     dissObj.TryGetProperty("data", out var dissData) &&
                     dissData.TryGetProperty("songlist", out var songArray) &&
                     songArray.ValueKind == JsonValueKind.Array)
                 {
-                    initialCapacity = songArray.GetArrayLength();
+                    int initialCapacity = songArray.GetArrayLength();
                     var list = new List<Song>(initialCapacity);
                     foreach (var item in songArray.EnumerateArray())
                     {
                         var song = ParseSongFromElement(item);
                         if (song != null) list.Add(song);
                     }
-                    AppLogger.Info("MusicApi", $"GetDailyRecommendSongsAsync: fetched {list.Count} songs for 每日30首");
-                    MetadataCacheService.SaveDailyRecommend(uin, cacheDate, list);
+                    AppLogger.Info("MusicApi", $"{featureName}: fetched {list.Count} songs");
+                    saveCache(uin, cacheDate, list);
                     return list;
                 }
 
@@ -135,7 +172,7 @@ public sealed partial class MusicApi
         }
         catch (Exception ex)
         {
-            AppLogger.Error("MusicApi", "GetDailyRecommendSongsAsync error", ex);
+            AppLogger.Error("MusicApi", $"{featureName} error", ex);
             return [];
         }
     }

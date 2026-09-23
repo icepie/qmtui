@@ -66,7 +66,10 @@ public static class LocalMusicService
                 Directory.CreateDirectory(s_cacheDir);
             }
         }
-        catch {}
+        catch (Exception ex)
+        {
+            AppLogger.Warn("LocalMusic", $"Failed to ensure storage directories: {ex.Message}");
+        }
     }
 
     public static void LoadConfig()
@@ -495,7 +498,10 @@ public static class LocalMusicService
                 var parsed = LyricParser.ParseSingleLrc(lrcText);
                 if (parsed.Count > 0) return parsed;
             }
-            catch {}
+            catch (Exception ex)
+            {
+                AppLogger.Debug("LocalMusic", $"Read local .lrc file failed: {ex.Message}");
+            }
         }
 
         // 2. 内嵌歌词读取
@@ -675,7 +681,7 @@ public static class LocalMusicService
         };
     }
 
-    private static string ComputeMd5(string input)
+    internal static string ComputeMd5(string input)
     {
         var bytes = MD5.HashData(Encoding.UTF8.GetBytes(input));
         return Convert.ToHexString(bytes).ToLowerInvariant();

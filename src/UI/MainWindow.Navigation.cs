@@ -2,114 +2,46 @@ using Terminal.Gui.App;
 using QmTui.Api;
 using QmTui.Models;
 using QmTui.Services;
+using QmTui.Utils;
 
 namespace QmTui.UI;
 
 public sealed partial class MainWindow
 {
-    private async Task ExecuteSearchAsync()
+    private Task LoadDailyRecommendSongsAsync(bool forceRefresh = false) =>
+        LoadDailyFeedRecommendPlaylistAsync(
+            targetViewMode: ViewMode.DailyRecommend,
+            featureName: "每日30首",
+            statusTag: "每日推荐",
+            loginPrompt: "请按 U 键登录后获取您的每日 30 首个性化推荐歌单",
+            getCache: MetadataCacheService.GetDailyRecommend,
+            saveCache: MetadataCacheService.SaveDailyRecommend,
+            fetchApiAsync: MusicApi.GetDailyRecommendSongsAsync,
+            forceRefresh: forceRefresh);
+
+    private Task LoadMillionRecommendSongsAsync(bool forceRefresh = false) =>
+        LoadDailyFeedRecommendPlaylistAsync(
+            targetViewMode: ViewMode.MillionRecommend,
+            featureName: "百万收藏",
+            statusTag: "百万收藏",
+            loginPrompt: "请按 U 键登录后获取您的官方百万收藏精选歌单",
+            getCache: MetadataCacheService.GetMillionRecommend,
+            saveCache: MetadataCacheService.SaveMillionRecommend,
+            fetchApiAsync: MusicApi.GetMillionRecommendSongsAsync,
+            forceRefresh: forceRefresh);
+
+    private async Task LoadDailyFeedRecommendPlaylistAsync(
+        ViewMode targetViewMode,
+        string featureName,
+        string statusTag,
+        string loginPrompt,
+        Func<string, string, DailyRecommendCache?> getCache,
+        Action<string, string, List<Song>> saveCache,
+        Func<CancellationToken, Task<List<Song>>> fetchApiAsync,
+        bool forceRefresh = false)
     {
-        if (_isSearching) return;
-        _isSearching = true;
-
-        try
-        {
-            _currentViewMode = ViewMode.Search;
-            _isViewingPlaylistsList = false;
-            _currentDrilldownPlaylist = null;
-            _isViewingAlbumsList = false;
-            _currentDrilldownAlbum = null;
-
-            var text = _searchField.Text.ToString()?.Trim();
-            if (string.IsNullOrEmpty(text)) return;
-
-            _lastSearchQuery = text;
-            _searchCurrentPage = 1;
-            _hasMoreSearchResults = true;
-            _isLoadingMore = false;
-
-            _songListView.SetMessage("正在搜索...", $"正在搜索「{text}」...");
-
-            var songs = await MusicApi.SearchAsync(text, 1, PageSize);
-
-            Application.Invoke(() =>
-            {
-                if (songs.Count < PageSize)
-                {
-                    _hasMoreSearchResults = false;
-                }
-
-                var title = $"搜索结果: 共 {songs.Count} 首" + (_hasMoreSearchResults ? " (向下滚动加载更多)" : " (已全部加载)");
-                _songListView.SetSongs(songs, title);
-                if (_activeSong != null)
-                {
-                    _songListView.SetPlayingSong(_activeSong.Mid);
-                }
-                if (songs.Count > 0)
-                {
-                    _songListView.SetFocusToList();
-                }
-            });
-        }
-        catch (Exception ex)
-        {
-            QmTui.Utils.AppLogger.Error("Search", "ExecuteSearchAsync failed", ex);
-        }
-        finally
-        {
-            _isSearching = false;
-        }
-    }
-
-    private async Task LoadMoreSearchResultsAsync()
-    {
-        if (_isLoadingMore || !_hasMoreSearchResults || string.IsNullOrEmpty(_lastSearchQuery))
-        {
-            return;
-        }
-
-        _isLoadingMore = true;
-        var nextPage = _searchCurrentPage + 1;
-
-        Application.Invoke(() =>
-        {
-            _songListView.Title = $"搜索结果: 共 {_songListView.Songs.Count} 首 (正在加载更多...)";
-        });
-
-        var moreSongs = await MusicApi.SearchAsync(_lastSearchQuery, nextPage, PageSize);
-
-        Application.Invoke(() =>
-        {
-            if (moreSongs.Count > 0)
-            {
-                _searchCurrentPage = nextPage;
-                var currentCount = _songListView.Songs.Count;
-
-                if (moreSongs.Count < PageSize)
-                {
-                    _hasMoreSearchResults = false;
-                }
-
-                var title = $"搜索结果: 共 {currentCount + moreSongs.Count} 首" + (_hasMoreSearchResults ? " (向下滚动加载更多)" : " (已全部加载)");
-                _songListView.AppendSongs(moreSongs, title);
-                if (_activeSong != null)
-                {
-                    _songListView.SetPlayingSong(_activeSong.Mid);
-                }
-            }
-            else
-            {
-                _hasMoreSearchResults = false;
-                _songListView.Title = $"搜索结果: 共 {_songListView.Songs.Count} 首 (已无更多结果)";
-            }
-
-            _isLoadingMore = false;
-        });
-    }
-
-    private async Task LoadDailyRecommendSongsAsync(bool forceRefresh = false)
-    {
-        _currentViewMode = ViewMode.DailyRecommend;
+        _currentViewMode = targetViewMode;
+        UpdateSearchCategoryVisibility(false);
         _hasMoreSearchResults = false;
         _isViewingPlaylistsList = false;
         _currentDrilldownPlaylist = null;
@@ -120,7 +52,7 @@ public sealed partial class MainWindow
         {
             Application.Invoke(() =>
             {
-                _songListView.SetMessage("请按 U 键登录后获取您的每日 30 首个性化推荐歌单", "每日30首 (未登录)");
+                _songListView.SetMessage(loginPrompt, $"{featureName} (未登录)");
             });
             return;
         }
@@ -130,13 +62,13 @@ public sealed partial class MainWindow
 
         if (!forceRefresh)
         {
-            var cached = MetadataCacheService.GetDailyRecommend(uin, today);
+            var cached = getCache(uin, today);
             if (cached != null && cached.Songs.Count > 0)
             {
                 var cachedSongs = cached.Songs;
                 Application.Invoke(() =>
                 {
-                    _songListView.SetSongs(cachedSongs, $"每日30首: 今日精选 {cachedSongs.Count} 首");
+                    _songListView.SetSongs(cachedSongs, $"{featureName}: 今日精选 {cachedSongs.Count} 首");
                     if (_activeSong != null)
                     {
                         _songListView.SetPlayingSong(_activeSong.Mid);
@@ -145,32 +77,32 @@ public sealed partial class MainWindow
                         _controlBar.SetFavoriteStatus(isFav);
                     }
                     _songListView.SetFocusToList();
-                    _controlBar.UpdateStatus($"[每日推荐] 今日 30 首推荐已从本地缓存载入（共 {cachedSongs.Count} 首）");
+                    _controlBar.UpdateStatus($"[{statusTag}] 今日 {featureName} 已从本地缓存载入（共 {cachedSongs.Count} 首）");
                 });
                 return;
             }
         }
 
-        _songListView.SetMessage("正在同步今日推荐歌单（每日30首）...", "每日30首 (加载中)");
-        _controlBar.UpdateStatus("[正在加载] 正在请求每日30首推荐曲目...");
+        _songListView.SetMessage($"正在同步今日推荐歌单（{featureName}）...", $"{featureName} (加载中)");
+        _controlBar.UpdateStatus($"[正在加载] 正在请求{featureName}推荐曲目...");
 
-        var songs = await MusicApi.GetDailyRecommendSongsAsync();
+        var songs = await fetchApiAsync(CancellationToken.None);
 
         if (songs.Count > 0)
         {
-            MetadataCacheService.SaveDailyRecommend(uin, today, songs);
+            saveCache(uin, today, songs);
         }
 
         Application.Invoke(() =>
         {
             if (songs.Count == 0)
             {
-                _songListView.SetMessage("今日推荐歌单获取为空，请按 U 检查登录状态或稍后重试", "每日30首: 0 首");
+                _songListView.SetMessage("今日推荐歌单获取为空，请按 U 检查登录状态或稍后重试", $"{featureName}: 0 首");
                 _controlBar.UpdateStatus("[加载提示] 未能获取到今日推荐歌单数据");
                 return;
             }
 
-            _songListView.SetSongs(songs, $"每日30首: 今日精选 {songs.Count} 首");
+            _songListView.SetSongs(songs, $"{featureName}: 今日精选 {songs.Count} 首");
             if (_activeSong != null)
             {
                 _songListView.SetPlayingSong(_activeSong.Mid);
@@ -179,40 +111,91 @@ public sealed partial class MainWindow
                 _controlBar.SetFavoriteStatus(isFav);
             }
             _songListView.SetFocusToList();
-            _controlBar.UpdateStatus($"[每日推荐] 今日 30 首推荐已成功载入（共 {songs.Count} 首）");
+            _controlBar.UpdateStatus($"[{statusTag}] 今日 {featureName} 已成功载入（共 {songs.Count} 首）");
         });
     }
 
     private async Task LoadRecentPlaySongsAsync()
     {
         _currentViewMode = ViewMode.RecentPlay;
+        UpdateSearchCategoryVisibility(false);
         _isViewingPlaylistsList = false;
         _currentDrilldownPlaylist = null;
         _isViewingAlbumsList = false;
         _currentDrilldownAlbum = null;
 
-        var songs = RecentPlayHistory.GetSongs();
+        // 先用本地缓存立即渲染，不阻塞 UI
+        var localSongs = RecentPlayHistory.GetSongs();
         Application.Invoke(() =>
         {
-            if (songs.Count == 0)
+            if (localSongs.Count == 0)
             {
                 _songListView.SetMessage("暂无最近播放记录，快去点播一首歌曲吧！", "最近播放 (0 首)");
                 return;
             }
 
-            _songListView.SetSongs(songs, $"最近播放: 共 {songs.Count} 首 (按 D 移除历史)");
+            _songListView.SetSongs(localSongs, $"最近播放: 共 {localSongs.Count} 首 (按 D 移除历史)");
             if (_activeSong != null)
             {
                 _songListView.SetPlayingSong(_activeSong.Mid);
             }
             _songListView.SetFocusToList();
         });
-        _controlBar.UpdateStatus($"[最近播放] 已加载本地播放轨迹共 {songs.Count} 首");
+        _controlBar.UpdateStatus($"[最近播放] 已加载本地播放轨迹共 {localSongs.Count} 首");
+
+        // 已登录时异步拉取云端增量数据，覆盖更新本地
+        if (!UserSession.Current.IsLoggedIn)
+        {
+            return;
+        }
+
+        try
+        {
+            var (cloudSongs, newUpdateTime) = await MusicApi.GetRecentSongsAsync(_lastRecentCloudUpdateTime).ConfigureAwait(false);
+
+            // 无论是否有新数据，只要服务端返回了有效的 updateTime 就更新锚点，防止下次重复全量拉取
+            if (newUpdateTime > 0)
+            {
+                _lastRecentCloudUpdateTime = newUpdateTime;
+            }
+
+            if (cloudSongs.Count == 0)
+            {
+                return;
+            }
+
+            RecentPlayHistory.OverwriteFromCloud(cloudSongs);
+
+            if (_currentViewMode != ViewMode.RecentPlay)
+            {
+                return;
+            }
+
+            Application.Invoke(() =>
+            {
+                if (_currentViewMode != ViewMode.RecentPlay)
+                {
+                    return;
+                }
+
+                _songListView.SetSongs(cloudSongs, $"最近播放: 共 {cloudSongs.Count} 首 (按 D 移除历史)");
+                if (_activeSong != null)
+                {
+                    _songListView.SetPlayingSong(_activeSong.Mid);
+                }
+            });
+            _controlBar.UpdateStatus($"[最近播放] 已同步云端数据共 {cloudSongs.Count} 首");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("MainWindow", $"LoadRecentPlaySongsAsync cloud fetch failed: {ex.Message}");
+        }
     }
 
     private async Task LoadPlaylistsAsync()
     {
         _currentViewMode = ViewMode.PlaylistsList;
+        UpdateSearchCategoryVisibility(false);
         _hasMoreSearchResults = false;
         _isViewingPlaylistsList = true;
         _currentDrilldownPlaylist = null;
@@ -265,6 +248,7 @@ public sealed partial class MainWindow
     private async Task DrilldownPlaylistAsync(Playlist playlist)
     {
         _currentViewMode = ViewMode.PlaylistDrilldown;
+        UpdateSearchCategoryVisibility(false);
         _hasMoreSearchResults = false;
         _isViewingPlaylistsList = false;
         _currentDrilldownPlaylist = playlist;
@@ -356,6 +340,7 @@ public sealed partial class MainWindow
     private async Task LoadFavoriteAlbumsAsync()
     {
         _currentViewMode = ViewMode.FavoriteAlbums;
+        UpdateSearchCategoryVisibility(false);
         _hasMoreSearchResults = false;
         _isViewingPlaylistsList = false;
         _currentDrilldownPlaylist = null;
@@ -420,6 +405,7 @@ public sealed partial class MainWindow
     private async Task DrilldownAlbumAsync(Album album)
     {
         _currentViewMode = ViewMode.AlbumDrilldown;
+        UpdateSearchCategoryVisibility(false);
         _hasMoreSearchResults = false;
         _isViewingPlaylistsList = false;
         _currentDrilldownPlaylist = null;
@@ -462,12 +448,6 @@ public sealed partial class MainWindow
         if (nextSong != null)
         {
             await PlaySongAsync(nextSong);
-        }
-        else if (isAutoPlayback && _currentPlaybackMode == PlaybackMode.Sequential)
-        {
-            // 顺序播放播完最后一首自动停止
-            await _player.StopAsync();
-            UpdatePlayerStatus();
         }
     }
 

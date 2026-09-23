@@ -9,6 +9,7 @@ TestResults/
 .cache/
 .agents/
 .tags
+*.raw.cs
 
 # 构建输出与打包产物
 *.pkg.tar.*
@@ -33,3 +34,4 @@ AUR/
 release-aur.sh
 bump-version.sh
 web/amll/node_modules/
+.bin/

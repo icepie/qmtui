@@ -131,6 +131,7 @@ public sealed partial class MainWindow
         {
             PushCurrentNavigationSnapshot();
             _currentViewMode = ViewMode.ArtistDetail;
+            UpdateTopContextButtons();
 
             _singerSubMode = SingerSubMode.Songs;
             _singerSongOrder = 1;
@@ -166,6 +167,37 @@ public sealed partial class MainWindow
                 }
             }
 
+            if (UserSession.Current.IsLoggedIn && detail != null && !string.IsNullOrEmpty(detail.Mid))
+            {
+                var targetMid = detail.Mid;
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var onlineFav = await MusicApi.CheckSingerFollowStatusAsync(targetMid);
+                        bool localFav = UserSession.Current.FavoriteSingers.Contains(targetMid);
+                        if (onlineFav != localFav)
+                        {
+                            if (onlineFav) UserSession.Current.FavoriteSingers.Add(targetMid);
+                            else UserSession.Current.FavoriteSingers.Remove(targetMid);
+                            UserSession.Current.Save();
+
+                            Application.Invoke(() =>
+                            {
+                                if (_currentSingerMid == targetMid)
+                                {
+                                    UpdateTopContextButtons();
+                                }
+                            });
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        AppLogger.Error("MainWindow", $"Check singer follow status failed for {targetMid}", ex);
+                    }
+                });
+            }
+
             Application.Invoke(() =>
             {
                 try
@@ -186,6 +218,7 @@ public sealed partial class MainWindow
                     bool isFav = !string.IsNullOrEmpty(detail.Mid) && UserSession.Current.FavoriteSingers.Contains(detail.Mid);
                     _artistAlbumDetailView.SetArtist(detail, coverPath, isFav, _singerSubMode, _singerSongOrder);
                     _artistAlbumDetailView.OnActivated();
+                    UpdateTopContextButtons();
 
                     var title = $"歌手: {detail.Name} - 热门作品 (共 {detail.Songs.Count} 首" +
                         (_hasMoreSingerSongs ? "，向下滚动加载更多" : "，已全部加载") + "，按 Esc 返回)";
@@ -231,6 +264,7 @@ public sealed partial class MainWindow
             {
                 bool isFav = !string.IsNullOrEmpty(_currentSingerMid) && UserSession.Current.FavoriteSingers.Contains(_currentSingerMid);
                 _artistAlbumDetailView.UpdateSingerActions(_singerSubMode, _singerSongOrder, isFav);
+                UpdateTopContextButtons();
                 RenderSingerAlbumsView(0);
             });
         }
@@ -246,6 +280,7 @@ public sealed partial class MainWindow
                     _artistAlbumDetailView.SetArtist(_currentSingerDetail, _currentSingerCoverPath, isFav, _singerSubMode, _singerSongOrder);
                     _artistAlbumDetailView.OnActivated();
                 }
+                UpdateTopContextButtons();
 
                 var orderText = _singerSongOrder == 1 ? "热门" : "最新";
                 var title = $"歌手: {_currentSingerName} - {orderText}作品 (共 {_singerCachedSongs.Count} 首" +
@@ -289,6 +324,7 @@ public sealed partial class MainWindow
                 _artistAlbumDetailView.UpdateSingerActions(_singerSubMode, _singerSongOrder, isFav);
                 _artistAlbumDetailView.OnActivated();
             }
+            UpdateTopContextButtons();
 
             var title = $"歌手: {_currentSingerName} - {orderText}作品 (共 {songs.Count} 首" +
                 (_hasMoreSingerSongs ? "，向下滚动加载更多" : "，已全部加载") + "，按 Esc 返回)";
@@ -310,20 +346,54 @@ public sealed partial class MainWindow
             return Task.CompletedTask;
         }
 
-        bool isFav = UserSession.Current.FavoriteSingers.Contains(_currentSingerMid);
-        if (isFav)
+        var mid = _currentSingerMid;
+        var name = _currentSingerName;
+        bool isFav = UserSession.Current.FavoriteSingers.Contains(mid);
+        bool willFollow = !isFav;
+
+        if (willFollow)
         {
-            UserSession.Current.FavoriteSingers.Remove(_currentSingerMid);
-            UserSession.Current.Save();
-            _artistAlbumDetailView.UpdateSingerActions(_singerSubMode, _singerSongOrder, false);
-            _controlBar.UpdateStatus($"[已取消关注] 已取消关注歌手【{_currentSingerName}】");
+            UserSession.Current.FavoriteSingers.Add(mid);
+            _controlBar.UpdateStatus($"[已关注] 成功关注歌手【{name}】");
         }
         else
         {
-            UserSession.Current.FavoriteSingers.Add(_currentSingerMid);
-            UserSession.Current.Save();
-            _artistAlbumDetailView.UpdateSingerActions(_singerSubMode, _singerSongOrder, true);
-            _controlBar.UpdateStatus($"[已关注] 成功关注歌手【{_currentSingerName}】");
+            UserSession.Current.FavoriteSingers.Remove(mid);
+            _controlBar.UpdateStatus($"[已取消关注] 已取消关注歌手【{name}】");
+        }
+        UserSession.Current.Save();
+
+        _artistAlbumDetailView.UpdateSingerActions(_singerSubMode, _singerSongOrder, willFollow);
+        UpdateTopContextButtons();
+
+        if (UserSession.Current.IsLoggedIn)
+        {
+            _ = Task.Run(async () =>
+            {
+                var ok = await MusicApi.ToggleSingerFollowAsync(mid, willFollow);
+                if (!ok)
+                {
+                    Application.Invoke(() =>
+                    {
+                        if (willFollow)
+                        {
+                            UserSession.Current.FavoriteSingers.Remove(mid);
+                        }
+                        else
+                        {
+                            UserSession.Current.FavoriteSingers.Add(mid);
+                        }
+                        UserSession.Current.Save();
+
+                        if (_currentSingerMid == mid)
+                        {
+                            _artistAlbumDetailView.UpdateSingerActions(_singerSubMode, _singerSongOrder, !willFollow);
+                            UpdateTopContextButtons();
+                        }
+                        _controlBar.UpdateStatus($"[关注同步失败] 云端上报失败，已恢复状态");
+                    });
+                }
+            });
         }
 
         return Task.CompletedTask;
@@ -412,19 +482,11 @@ public sealed partial class MainWindow
                         _hasMoreSingerAlbums = false;
                     }
 
-                    int startIdx = _singerAlbums.Count;
                     _singerAlbums.AddRange(moreAlbums);
-
-                    var newItems = new List<string>(moreAlbums.Count);
-                    for (int i = 0; i < moreAlbums.Count; i++)
-                    {
-                        var a = moreAlbums[i];
-                        newItems.Add($"{(startIdx + i + 1):D2}  {a.Title}  -  {a.Artist}  (共 {a.SongCount} 首)");
-                    }
 
                     var title = $"歌手专辑: {_currentSingerName} (共 {_singerAlbums.Count} 张" +
                         (_hasMoreSingerAlbums ? "，向下滚动加载更多" : "，已全部加载") + ", 按 Enter 进入, D 收藏)";
-                    _songListView.AppendCustomItems(newItems, title);
+                    _songListView.AppendAlbums(moreAlbums, title);
                     _controlBar.UpdateStatus($"[加载完成] 歌手专辑已载入 {_singerAlbums.Count} 张");
                 }
                 else
@@ -487,20 +549,13 @@ public sealed partial class MainWindow
             return;
         }
 
-        var items = new List<string>(_singerAlbums.Count);
-        for (int i = 0; i < _singerAlbums.Count; i++)
-        {
-            var a = _singerAlbums[i];
-            items.Add($"{(i + 1):D2}  {a.Title}  -  {a.Artist}  (共 {a.SongCount} 首)");
-        }
-
         var title = $"歌手专辑: {_currentSingerName} (共 {_singerAlbums.Count} 张" +
             (_hasMoreSingerAlbums ? "，向下滚动加载更多" : "，已全部加载") + ", 按 Enter 进入, D 收藏)";
-        _songListView.SetCustomItems(items, title, async (idx) =>
+        _songListView.SetAlbums(_singerAlbums, title, async (idx) =>
         {
             if (idx >= 0 && idx < _singerAlbums.Count)
             {
-                await DrilldownToAlbumAsync(_singerAlbums[idx].Mid, _singerAlbums[idx].Title, _singerAlbums[idx].Artist);
+                await DrilldownToAlbumAsync(_singerAlbums[idx].Mid, _singerAlbums[idx].Title, _singerAlbums[idx].Artist, _singerAlbums[idx].Id);
             }
         }, (selectedIdx) =>
         {
@@ -567,7 +622,7 @@ public sealed partial class MainWindow
         }
     }
 
-    private async Task DrilldownToAlbumAsync(string albumMid, string albumName, string artistName)
+    private async Task DrilldownToAlbumAsync(string albumMid, string albumName, string artistName, long albumId = 0)
     {
         PushCurrentNavigationSnapshot();
         _currentViewMode = ViewMode.AlbumDetail;
@@ -600,6 +655,12 @@ public sealed partial class MainWindow
                 return;
             }
 
+            if (detail.Id == 0 && albumId > 0)
+            {
+                detail = detail with { Id = albumId };
+            }
+
+            _currentAlbumDetail = detail;
             _artistAlbumDetailView.SetAlbum(detail, coverPath);
             _artistAlbumDetailView.SetHintText("Enter: 播放歌曲  D/S: 收藏  Esc: 返回");
             _artistAlbumDetailView.OnActivated();
@@ -680,6 +741,7 @@ public sealed partial class MainWindow
                 _songListView.SetFocusToList();
             }
 
+            UpdateTopContextButtons();
             SetNeedsDraw();
             return;
         }
@@ -693,6 +755,7 @@ public sealed partial class MainWindow
         _songListView.SetFocusToList();
 
         ShowLyricView();
+        UpdateTopContextButtons();
         SetNeedsDraw();
     }
 

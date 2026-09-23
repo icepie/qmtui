@@ -40,6 +40,13 @@ public sealed partial class MainWindow : Window
     private readonly Label _songListTitleLabel;
     private readonly Label _lyricTitleLabel;
     private readonly Label _searchLabel;
+    private SearchCategory _searchCategory = SearchCategory.Songs;
+    private readonly Button _searchSongsBtn;
+    private readonly Button _searchPlaylistsBtn;
+    private readonly Button _searchAlbumsBtn;
+    private readonly Dictionary<string, List<Song>> _cachedSearchSongs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<Playlist>> _cachedSearchPlaylists = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<Album>> _cachedSearchAlbums = new(StringComparer.OrdinalIgnoreCase);
     private readonly Button _userStatusBtn;
     private readonly Button _recognizeBtn;
     private readonly Button _webBtn;
@@ -80,8 +87,12 @@ public sealed partial class MainWindow : Window
 
     private string _lastSearchQuery = "";
     private int _searchCurrentPage = 1;
-    private bool _isLoadingMore;
     private bool _hasMoreSearchResults;
+    private int _searchPlaylistsCurrentPage = 1;
+    private bool _hasMoreSearchPlaylists = true;
+    private int _searchAlbumsCurrentPage = 1;
+    private bool _hasMoreSearchAlbums = true;
+    private bool _isLoadingMore;
     private bool _isSearching;
     private const int PageSize = 50;
 
@@ -91,14 +102,26 @@ public sealed partial class MainWindow : Window
     private int _isAddToPlaylistOpen;
 
     private Album? _currentDrilldownAlbum;
+    private AlbumDetail? _currentAlbumDetail;
     private List<Album> _cachedAlbums = [];
     private bool _isViewingAlbumsList;
+
+    // 云端最近播放增量拉取的 updateTime 锚点（0 表示首次全量）
+    private long _lastRecentCloudUpdateTime;
+
+    internal enum SearchCategory
+    {
+        Songs,
+        Playlists,
+        Albums
+    }
 
     private enum ViewMode
     {
         Search,
         Favorite,
         DailyRecommend,
+        MillionRecommend,
         GuessRecommend,
         PlaylistDrilldown,
         PlaylistsList,
@@ -169,6 +192,7 @@ public sealed partial class MainWindow : Window
 
         _mprisService = new SystemMediaSessionService();
         SetupMprisService();
+        SetupConnectService();
 
         Task.Run(async () =>
         {
@@ -258,11 +282,67 @@ public sealed partial class MainWindow : Window
                 _searchField.SetFocus();
             }
         };
+        _searchField.EnableMiddleClickPaste(onFocused: () =>
+        {
+            _isSearchActive = true;
+            Application.Invoke(UpdateFrameBorderHighlights);
+        });
+
+        _searchSongsBtn = new Button
+        {
+            Text = "[1单曲]",
+            NoDecorations = true,
+            X = Pos.Right(_searchField) + 1,
+            Y = 0,
+            ShadowStyle = ShadowStyles.None,
+            CanFocus = false,
+            Visible = false,
+            TabStop = Terminal.Gui.ViewBase.TabBehavior.NoStop
+        };
+        _searchSongsBtn.KeyBindings.Remove(Key.Space);
+        _searchSongsBtn.Accepting += async (s, e) => await OnContextAction1Async();
+        Add(_searchSongsBtn);
+
+        _searchPlaylistsBtn = new Button
+        {
+            Text = "[2歌单]",
+            NoDecorations = true,
+            X = Pos.Right(_searchSongsBtn) + 1,
+            Y = 0,
+            ShadowStyle = ShadowStyles.None,
+            CanFocus = false,
+            Visible = false,
+            TabStop = Terminal.Gui.ViewBase.TabBehavior.NoStop
+        };
+        _searchPlaylistsBtn.KeyBindings.Remove(Key.Space);
+        _searchPlaylistsBtn.Accepting += async (s, e) => await OnContextAction2Async();
+        Add(_searchPlaylistsBtn);
+
+        _searchAlbumsBtn = new Button
+        {
+            Text = "[3专辑]",
+            NoDecorations = true,
+            X = Pos.Right(_searchPlaylistsBtn) + 1,
+            Y = 0,
+            ShadowStyle = ShadowStyles.None,
+            CanFocus = false,
+            Visible = false,
+            TabStop = Terminal.Gui.ViewBase.TabBehavior.NoStop
+        };
+        _searchAlbumsBtn.KeyBindings.Remove(Key.Space);
+        _searchAlbumsBtn.Accepting += async (s, e) => await OnContextAction3Async();
+        Add(_searchAlbumsBtn);
 
         // 初始化顶部按钮的独立防重叠自适应布局
         UpdateTopRightButtonsLayout();
         _searchField.KeyDown += async (s, k) =>
         {
+            if (k == Key.V.WithCtrl)
+            {
+                k.Handled = true;
+                _searchField.PasteFromClipboard(preferPrimary: false);
+                return;
+            }
             if (k == Key.Enter)
             {
                 k.Handled = true;
@@ -350,12 +430,14 @@ public sealed partial class MainWindow : Window
             "搜索结果",
             "我的喜欢",
             "每日30首",
+            "百万收藏",
             "猜你喜欢",
             "我的歌单",
             "收藏专辑",
             "最近播放",
             "本地音乐",
-            "WebDAV"
+            "WebDAV",
+            "远程控制"
         });
         _sidebarFrame.Add(_sidebarList);
         _sidebarFrame.MouseEvent += (s, m) =>
@@ -388,8 +470,32 @@ public sealed partial class MainWindow : Window
                     curIdx = _songListView.Songs.ToList().FindIndex(s => s.Mid == song.Mid);
                     if (curIdx < 0) curIdx = 0;
                 }
+                PlaybackSourceContext? sourceContext = null;
+                if (_currentViewMode == ViewMode.PlaylistDrilldown && _currentDrilldownPlaylist != null)
+                {
+                    var p = _currentDrilldownPlaylist;
+                    if (!p.IsMyFavorite && p.DirId != 201 && p.DirId != 211111)
+                    {
+                        string pId = p.Tid > 0 ? p.Tid.ToString() : p.DirId.ToString();
+                        if (!string.IsNullOrEmpty(pId) && pId != "0")
+                        {
+                            sourceContext = new PlaybackSourceContext.Playlist(pId, p.Title);
+                        }
+                    }
+                }
+                else if (_currentViewMode == ViewMode.AlbumDrilldown && _currentDrilldownAlbum != null)
+                {
+                    var a = _currentDrilldownAlbum;
+                    sourceContext = new PlaybackSourceContext.Album(a.Mid, a.Id, a.Title);
+                }
+                else if (_currentViewMode == ViewMode.AlbumDetail && _currentAlbumDetail != null)
+                {
+                    var a = _currentAlbumDetail;
+                    sourceContext = new PlaybackSourceContext.Album(a.Mid, a.Id, a.Name);
+                }
+
                 PlaybackQueueService.Instance.Mode = _currentPlaybackMode;
-                PlaybackQueueService.Instance.SetQueue(_songListView.Songs, curIdx);
+                PlaybackQueueService.Instance.SetQueue(_songListView.Songs, curIdx, sourceContext);
             }
             await PlaySongAsync(song);
         };
@@ -481,27 +587,27 @@ public sealed partial class MainWindow : Window
                 _currentDrilldownPlaylist = null;
                 _isViewingAlbumsList = false;
                 _currentDrilldownAlbum = null;
-                await ResumeOrStartGuessRadioAsync();
+                await LoadMillionRecommendSongsAsync();
             }
             else if (idx == 4)
+            {
+                _isViewingPlaylistsList = false;
+                _currentDrilldownPlaylist = null;
+                _isViewingAlbumsList = false;
+                _currentDrilldownAlbum = null;
+                await ResumeOrStartGuessRadioAsync();
+            }
+            else if (idx == 5)
             {
                 _isViewingAlbumsList = false;
                 _currentDrilldownAlbum = null;
                 await LoadPlaylistsAsync();
             }
-            else if (idx == 5)
-            {
-                _isViewingPlaylistsList = false;
-                _currentDrilldownPlaylist = null;
-                await LoadFavoriteAlbumsAsync();
-            }
             else if (idx == 6)
             {
                 _isViewingPlaylistsList = false;
                 _currentDrilldownPlaylist = null;
-                _isViewingAlbumsList = false;
-                _currentDrilldownAlbum = null;
-                await LoadRecentPlaySongsAsync();
+                await LoadFavoriteAlbumsAsync();
             }
             else if (idx == 7)
             {
@@ -509,7 +615,7 @@ public sealed partial class MainWindow : Window
                 _currentDrilldownPlaylist = null;
                 _isViewingAlbumsList = false;
                 _currentDrilldownAlbum = null;
-                await LoadLocalMusicAsync();
+                await LoadRecentPlaySongsAsync();
             }
             else if (idx == 8)
             {
@@ -517,7 +623,19 @@ public sealed partial class MainWindow : Window
                 _currentDrilldownPlaylist = null;
                 _isViewingAlbumsList = false;
                 _currentDrilldownAlbum = null;
+                await LoadLocalMusicAsync();
+            }
+            else if (idx == 9)
+            {
+                _isViewingPlaylistsList = false;
+                _currentDrilldownPlaylist = null;
+                _isViewingAlbumsList = false;
+                _currentDrilldownAlbum = null;
                 await LoadWebDavMusicAsync();
+            }
+            else if (idx == 10)
+            {
+                ShowConnectDialog();
             }
             _songListView.SetFocusToList();
             Application.Invoke(UpdateFrameBorderHighlights);
@@ -768,9 +886,6 @@ public sealed partial class MainWindow : Window
         };
         _artistAlbumDetailView.Clicked += () => SetFocusToWindow(2);
         _artistAlbumDetailView.TabNavigationRequested += forward => SwitchNextFocusWindow(forward);
-        _artistAlbumDetailView.SubModeRequested += () => _ = ToggleSingerSubModeAsync();
-        _artistAlbumDetailView.OrderRequested += () => _ = ToggleSingerSongOrderAsync();
-        _artistAlbumDetailView.FavoriteRequested += () => _ = ToggleSingerFavoriteAsync();
         _lyricFrame.Add(_artistAlbumDetailView);
 
         Add(_lyricFrame);
@@ -1358,6 +1473,22 @@ public sealed partial class MainWindow : Window
             }
             catch {}
 
+            try
+            {
+                _connectMdns?.Dispose();
+                _connectMdns = null;
+                if (_connectServer != null)
+                {
+                    if (_connectServer.IsRunning)
+                    {
+                        _connectServer.Stop();
+                    }
+                    _connectServer.Dispose();
+                    _connectServer = null;
+                }
+            }
+            catch {}
+
             try { _mprisService.Dispose(); } catch {}
             try { _player.Dispose(); } catch {}
             try { UserSession.Current.Save(); } catch {}
@@ -1402,7 +1533,8 @@ public sealed partial class MainWindow : Window
     /// </summary>
     internal void UpdateTopRightButtonsLayout()
     {
-        if (_userStatusBtn == null || _recognizeBtn == null || _webBtn == null || _searchField == null) return;
+        if (_userStatusBtn == null || _recognizeBtn == null || _webBtn == null || _searchField == null ||
+            _searchSongsBtn == null || _searchPlaylistsBtn == null || _searchAlbumsBtn == null) return;
 
         // 1. 最右侧：Web 协同按钮 [W] Web (右侧保留 1 列安全留白)
         var isWebRunning = (_standaloneWebServer?.IsRunning == true) || (_player is WebPlayer);
@@ -1426,10 +1558,147 @@ public sealed partial class MainWindow : Window
         int recAnchorOffset = userAnchorOffset + 2 + recBtnWidth;
         _recognizeBtn.X = Pos.AnchorEnd(recAnchorOffset);
 
-        // 4. 搜索框自动填满左侧剩余空间 (避开识曲、账号与 Web 按钮并留出 2 列间距)
-        _searchField.Width = Dim.Fill(recAnchorOffset + 2);
+        // 4. 上下文操作按钮动态布局（[1...] [2...] [3...]）
+        int contextButtonsWidth = 0;
+        if (_searchSongsBtn?.Visible == true)
+        {
+            contextButtonsWidth += GetVisualWidth(_searchSongsBtn.Text.ToString()) + 1;
+        }
+        if (_searchPlaylistsBtn?.Visible == true)
+        {
+            contextButtonsWidth += GetVisualWidth(_searchPlaylistsBtn.Text.ToString()) + 1;
+        }
+        if (_searchAlbumsBtn?.Visible == true)
+        {
+            contextButtonsWidth += GetVisualWidth(_searchAlbumsBtn.Text.ToString()) + 1;
+        }
+
+        int categoryOffset = contextButtonsWidth > 0 ? contextButtonsWidth + 2 : 2;
+        _searchField.Width = Dim.Fill(recAnchorOffset + categoryOffset);
+
+        Pos currentX = Pos.Right(_searchField) + 1;
+        if (_searchSongsBtn?.Visible == true)
+        {
+            _searchSongsBtn.X = currentX;
+            currentX = Pos.Right(_searchSongsBtn) + 1;
+        }
+        if (_searchPlaylistsBtn?.Visible == true)
+        {
+            _searchPlaylistsBtn.X = currentX;
+            currentX = Pos.Right(_searchPlaylistsBtn) + 1;
+        }
+        if (_searchAlbumsBtn?.Visible == true)
+        {
+            _searchAlbumsBtn.X = currentX;
+        }
 
         SetNeedsLayout();
+    }
+
+    private async Task OnContextAction1Async()
+    {
+        if (_currentViewMode == ViewMode.Search)
+        {
+            await SwitchSearchCategoryAsync(SearchCategory.Songs);
+        }
+        else if (_currentViewMode == ViewMode.ArtistDetail)
+        {
+            await ToggleSingerSubModeAsync();
+        }
+    }
+
+    private async Task OnContextAction2Async()
+    {
+        if (_currentViewMode == ViewMode.Search)
+        {
+            await SwitchSearchCategoryAsync(SearchCategory.Playlists);
+        }
+        else if (_currentViewMode == ViewMode.ArtistDetail)
+        {
+            await ToggleSingerSongOrderAsync();
+        }
+    }
+
+    private async Task OnContextAction3Async()
+    {
+        if (_currentViewMode == ViewMode.Search)
+        {
+            await SwitchSearchCategoryAsync(SearchCategory.Albums);
+        }
+        else if (_currentViewMode == ViewMode.ArtistDetail)
+        {
+            await ToggleSingerFavoriteAsync();
+        }
+    }
+
+    internal void UpdateSearchCategoryVisibility(bool visible = true)
+    {
+        _ = visible;
+        UpdateTopContextButtons();
+    }
+
+    internal void UpdateSearchCategoryButtons()
+    {
+        UpdateTopContextButtons();
+    }
+
+    internal void UpdateTopContextButtons()
+    {
+        if (_searchSongsBtn == null || _searchPlaylistsBtn == null || _searchAlbumsBtn == null) return;
+
+        if (_isImmersiveMode || _isNowPlayingViewActive || _isAodMode)
+        {
+            _searchSongsBtn.Visible = false;
+            _searchPlaylistsBtn.Visible = false;
+            _searchAlbumsBtn.Visible = false;
+            UpdateTopRightButtonsLayout();
+            return;
+        }
+
+        switch (_currentViewMode)
+        {
+            case ViewMode.Search:
+                _searchSongsBtn.Text = "[1单曲]";
+                _searchPlaylistsBtn.Text = "[2歌单]";
+                _searchAlbumsBtn.Text = "[3专辑]";
+
+                _searchSongsBtn.Visible = true;
+                _searchPlaylistsBtn.Visible = true;
+                _searchAlbumsBtn.Visible = true;
+
+                _searchSongsBtn.SetScheme(_searchCategory == SearchCategory.Songs ? MikuTheme.SearchCategoryActive : MikuTheme.SearchCategoryDim);
+                _searchPlaylistsBtn.SetScheme(_searchCategory == SearchCategory.Playlists ? MikuTheme.SearchCategoryActive : MikuTheme.SearchCategoryDim);
+                _searchAlbumsBtn.SetScheme(_searchCategory == SearchCategory.Albums ? MikuTheme.SearchCategoryActive : MikuTheme.SearchCategoryDim);
+                break;
+
+            case ViewMode.ArtistDetail:
+                _searchSongsBtn.Text = _singerSubMode == SingerSubMode.Songs ? "[1专辑]" : "[1歌曲]";
+                _searchPlaylistsBtn.Text = _singerSongOrder == 1 ? "[2最新]" : "[2热门]";
+
+                bool isSingerFav = !string.IsNullOrEmpty(_currentSingerMid) && UserSession.Current.FavoriteSingers.Contains(_currentSingerMid);
+                _searchAlbumsBtn.Text = isSingerFav ? "[3已关注]" : "[3关注]";
+
+                _searchSongsBtn.Visible = true;
+                _searchPlaylistsBtn.Visible = _singerSubMode == SingerSubMode.Songs;
+                _searchAlbumsBtn.Visible = true;
+
+                _searchSongsBtn.SetScheme(MikuTheme.SearchCategoryDim);
+                _searchPlaylistsBtn.SetScheme(MikuTheme.SearchCategoryDim);
+                _searchAlbumsBtn.SetScheme(isSingerFav ? MikuTheme.SearchCategoryActive : MikuTheme.SearchCategoryDim);
+                break;
+
+            default:
+                _searchSongsBtn.Visible = false;
+                _searchPlaylistsBtn.Visible = false;
+                _searchAlbumsBtn.Visible = false;
+                break;
+        }
+
+        UpdateTopRightButtonsLayout();
+
+        _searchSongsBtn.SetNeedsDraw();
+        _searchPlaylistsBtn.SetNeedsDraw();
+        _searchAlbumsBtn.SetNeedsDraw();
     }
 
     public void UpdateLyricTitle(string text)

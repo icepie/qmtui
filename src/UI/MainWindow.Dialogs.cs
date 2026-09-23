@@ -396,6 +396,8 @@ public sealed partial class MainWindow
         if (confirmed)
         {
             UserSession.Current.Save();
+            try { _connectMdns?.Dispose(); _connectMdns = null; } catch {}
+            try { _connectServer?.Dispose(); _connectServer = null; } catch {}
             _mprisService.Dispose();
             _player.Dispose();
             _standaloneWebServer?.Dispose();
@@ -482,6 +484,7 @@ public sealed partial class MainWindow
             Width = 9
         };
         portField.SetScheme(TransparentDialogScheme);
+        portField.EnableMiddleClickPaste();
 
         var portHintLabel = new Label
         {
