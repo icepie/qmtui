@@ -103,23 +103,90 @@ public static partial class LyricParser
     public static List<LyricLine> AttachTranslation(List<LyricLine> lines, string? transLrc)
     {
         if (lines.Count == 0 || string.IsNullOrWhiteSpace(transLrc)) return lines;
-        var trans = ParseLrc(transLrc);
-        if (trans.Count == 0) return lines;
+        var transItems = ParseLrc(transLrc);
+        if (transItems.Count == 0) return lines;
 
-        var map = new Dictionary<long, string>(trans.Count);
-        foreach (var (timestamp, text) in trans)
-        {
-            map[(long)timestamp.TotalMilliseconds] = text;
-        }
+        var cleanTrans = FilterCleanTranslations(transItems);
+        if (cleanTrans.Count == 0) return lines;
 
+        var usedSet = new HashSet<(TimeSpan, string)>(cleanTrans.Count);
         for (int i = 0; i < lines.Count; i++)
         {
-            if (map.TryGetValue((long)lines[i].Timestamp.TotalMilliseconds, out var text))
+            if (IsMetaInfoLine(lines[i].Timestamp, lines[i].Text)) continue;
+
+            string transText = MatchTranslationText(lines[i].Timestamp, i, lines.Count, transItems, cleanTrans, usedSet);
+            if (transText.Length > 0)
             {
-                lines[i] = lines[i] with { Trans = text };
+                lines[i] = lines[i] with { Trans = transText };
             }
         }
         return lines;
+    }
+
+    /// <summary>
+    /// 挑出真正的翻译行：QQ 的 trans 字段里混着版权与“翻译贡献”占位行。
+    /// </summary>
+    private static List<(TimeSpan Timestamp, string Text)> FilterCleanTranslations(List<(TimeSpan Timestamp, string Text)> transItems) =>
+        transItems.FindAll(t =>
+            !string.IsNullOrWhiteSpace(t.Text) &&
+            t.Text != "//" &&
+            !t.Text.Contains("享有") &&
+            !t.Text.Contains("大模型") &&
+            !t.Text.Contains("翻译贡献"));
+
+    /// <summary>
+    /// 给一行原文挑译文：先 80ms 内的精确匹配，再退到 300ms 内时间距最近的候选，
+    /// 最后在两边行数一致时按索引兜底。
+    /// QRC 逐字歌词与翻译 LRC 来自不同时间轴（前者取行首词时间），只做毫秒精确匹配会让
+    /// 绝大多数行贴不上译文——实测某曲 39 行里只有 5 行时间戳恰好相等。
+    /// </summary>
+    private static string MatchTranslationText(
+        TimeSpan timestamp,
+        int index,
+        int totalLines,
+        List<(TimeSpan Timestamp, string Text)> transItems,
+        List<(TimeSpan Timestamp, string Text)> cleanTrans,
+        HashSet<(TimeSpan, string)> usedSet)
+    {
+        if (transItems.Count == 0) return "";
+
+        // 1. 精确匹配 (< 80ms)
+        var exact = transItems.Find(t => Math.Abs((t.Timestamp - timestamp).TotalMilliseconds) < 80);
+        if (!usedSet.Contains(exact) && cleanTrans.Contains(exact))
+        {
+            usedSet.Add(exact);
+            return exact.Text;
+        }
+
+        if (cleanTrans.Count == 0) return "";
+
+        // 2. 300ms 紧凑容差候选匹配 (取时间距离最小的候选，避免跨句抢配)
+        var candidates = cleanTrans.FindAll(t => !usedSet.Contains(t) && Math.Abs((t.Timestamp - timestamp).TotalMilliseconds) <= 300);
+        if (candidates.Count > 0)
+        {
+            var best = candidates[0];
+            double minDiff = Math.Abs((best.Timestamp - timestamp).TotalMilliseconds);
+            for (int c = 1; c < candidates.Count; c++)
+            {
+                double diff = Math.Abs((candidates[c].Timestamp - timestamp).TotalMilliseconds);
+                if (diff < minDiff)
+                {
+                    minDiff = diff;
+                    best = candidates[c];
+                }
+            }
+            usedSet.Add(best);
+            return best.Text;
+        }
+
+        // 3. 总行数完全一致时的同索引保底回退
+        if (cleanTrans.Count == totalLines && index < cleanTrans.Count && !usedSet.Contains(cleanTrans[index]))
+        {
+            usedSet.Add(cleanTrans[index]);
+            return cleanTrans[index].Text;
+        }
+
+        return "";
     }
 
     // #endregion
@@ -260,13 +327,7 @@ public static partial class LyricParser
         }
 
         var transItems = ParseLrc(rawTrans);
-        var cleanTrans = transItems.FindAll(t =>
-            !string.IsNullOrWhiteSpace(t.Text) &&
-            t.Text != "//" &&
-            !t.Text.Contains("享有") &&
-            !t.Text.Contains("大模型") &&
-            !t.Text.Contains("翻译贡献")
-        );
+        var cleanTrans = FilterCleanTranslations(transItems);
 
         var usedSet = new HashSet<(TimeSpan, string)>(cleanTrans.Count);
         var result = new List<LyricLine>(origItems.Count);
@@ -274,48 +335,9 @@ public static partial class LyricParser
         for (int i = 0; i < origItems.Count; i++)
         {
             var orig = origItems[i];
-            string transText = "";
-
-            bool isMeta = IsMetaInfoLine(orig.Timestamp, orig.Text);
-
-            if (!isMeta && transItems.Count > 0)
-            {
-                // 1. 精确匹配 (< 80ms)
-                var exact = transItems.Find(t => Math.Abs((t.Timestamp - orig.Timestamp).TotalMilliseconds) < 80);
-                if (exact.Text != null && !usedSet.Contains(exact) &&
-                    exact.Text != "//" && !exact.Text.Contains("享有") && !exact.Text.Contains("大模型") && !exact.Text.Contains("翻译贡献"))
-                {
-                    transText = exact.Text;
-                    usedSet.Add(exact);
-                }
-                else if (cleanTrans.Count > 0)
-                {
-                    // 2. 300ms 紧凑容差候选匹配 (取时间距离最小的候选，避免跨句抢配)
-                    var candidates = cleanTrans.FindAll(t => !usedSet.Contains(t) && Math.Abs((t.Timestamp - orig.Timestamp).TotalMilliseconds) <= 300);
-                    if (candidates.Count > 0)
-                    {
-                        var best = candidates[0];
-                        var minDiff = Math.Abs((best.Timestamp - orig.Timestamp).TotalMilliseconds);
-                        for (int c = 1; c < candidates.Count; c++)
-                        {
-                            var diff = Math.Abs((candidates[c].Timestamp - orig.Timestamp).TotalMilliseconds);
-                            if (diff < minDiff)
-                            {
-                                minDiff = diff;
-                                best = candidates[c];
-                            }
-                        }
-                        transText = best.Text;
-                        usedSet.Add(best);
-                    }
-                    // 3. 总行数完全一致时的同索引保底回退
-                    else if (cleanTrans.Count == origItems.Count && i < cleanTrans.Count && !usedSet.Contains(cleanTrans[i]))
-                    {
-                        transText = cleanTrans[i].Text;
-                        usedSet.Add(cleanTrans[i]);
-                    }
-                }
-            }
+            string transText = IsMetaInfoLine(orig.Timestamp, orig.Text)
+                ? ""
+                : MatchTranslationText(orig.Timestamp, i, origItems.Count, transItems, cleanTrans, usedSet);
 
             result.Add(new LyricLine(orig.Timestamp, orig.Text, transText));
         }

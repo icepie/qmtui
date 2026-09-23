@@ -128,6 +128,35 @@ public class LyricParserTests
     }
 
     [Fact]
+    public void AttachTranslation_TimelineDriftWithinTolerance_AttachesEveryLine()
+    {
+        // QRC 行首时间与翻译 LRC 的时间戳出自不同时间轴：实测某曲 39 行里只有 5 行毫秒完全相等，
+        // 只做精确匹配会让整页歌词只剩零星几句中文。这里译文比原文晚 120ms。
+        const string qrc =
+            "[15297,900]馬鹿みたい (15297,900)子供なのね\n" +
+            "[21609,900]夢を追って (21609,900)傷ついて\n" +
+            "[28024,900]嘘が下手 (28024,900)なくせに";
+        var lines = LyricParser.ParseQrc(qrc);
+        Assert.Equal(3, lines.Count);
+        Assert.Equal(TimeSpan.FromMilliseconds(15297), lines[0].Timestamp);
+
+        const string trans = "[00:15.417]像笨蛋一样的孩子呢\n[00:21.729]追逐梦想受了伤\n[00:28.144]明明不擅长说谎";
+
+        var attached = LyricParser.AttachTranslation([.. lines], trans);
+        Assert.Equal("像笨蛋一样的孩子呢", attached[0].Trans);
+        Assert.Equal("追逐梦想受了伤", attached[1].Trans);
+        Assert.Equal("明明不擅长说谎", attached[2].Trans);
+        Assert.NotEmpty(attached[0].Words!); // 逐字时间轴不能被译文弄丢
+
+        // 普通 LRC 路径共用同一套匹配，行为必须一致。
+        const string orig = "[00:15.297]馬鹿みたい子供なのね\n[00:21.609]夢を追って傷ついて\n[00:28.024]嘘が下手なくせに";
+        var merged = LyricParser.MergeLyrics(orig, trans);
+        Assert.Equal("像笨蛋一样的孩子呢", merged[0].Trans);
+        Assert.Equal("追逐梦想受了伤", merged[1].Trans);
+        Assert.Equal("明明不擅长说谎", merged[2].Trans);
+    }
+
+    [Fact]
     public void DecryptQrc_RealPayload_YieldsWords()
     {
         // 真实响应（qrc:1 时 lyric 字段为十六进制密文），期望解出与官方一致的词级时间
