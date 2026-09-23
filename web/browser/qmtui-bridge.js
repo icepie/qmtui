@@ -269,7 +269,10 @@ import { state } from './bridge/state.js';
     }
   }
 
-  function applyState(remote) {
+  function applyState(frame) {
+    // 进度帧是增量的（只有位置/播放态/音量等易变字段），合并进上一帧后再按全量状态处理：
+    // 否则每 400ms 一次的进度帧会把歌曲、歌词、队列从 state.remote 里抹掉。
+    const remote = { ...state.remote, ...frame };
     if (remote.type === 'favorites_synced') {
       // 后端全量预热完成：此前收藏集合接口一直回 503，这里立刻补拉一次。
       ensureFavoriteKeys(true);
@@ -425,6 +428,24 @@ import { state } from './bridge/state.js';
     }
   }
 
+  /**
+   * 账号信息在启动阶段会被 boot() 与 WebSocket 建连各取一次；共用一个在途 Promise，
+   * 个人主页路由则强制取新值（登录/登出由登录事件直接喂 renderAccount，不走这里）。
+   */
+  let accountFetch = { at: 0, promise: null };
+  let hasOpenedSocket = false;
+  const ACCOUNT_FRESH_MS = 2000;
+  function fetchAccount(force = false) {
+    const fresh = accountFetch.promise && Date.now() - accountFetch.at < ACCOUNT_FRESH_MS;
+    if (!force && fresh) return accountFetch.promise;
+    const promise = api('/api/account');
+    accountFetch = { at: Date.now(), promise };
+    promise.catch(() => {
+      if (accountFetch.promise === promise) accountFetch = { at: 0, promise: null };
+    });
+    return promise;
+  }
+
   function connect() {
     state.source?.close();
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -438,10 +459,13 @@ import { state } from './bridge/state.js';
     socket.onopen = () => {
       state.reconnectDelay = 1000;
       document.documentElement.dataset.qmtuiBridge = 'connected';
-      // Re-assert the authoritative account on (re)connect: the UserInfo
-      // component may have re-mounted while the socket was down, resetting its
-      // display state that only renderAccount restores.
-      api('/api/account')
+      // Re-assert the authoritative account on reconnect: the UserInfo component
+      // may have re-mounted while the socket was down, resetting its display
+      // state that only renderAccount restores. The first open shares boot()'s
+      // in-flight fetch instead of firing a second identical request.
+      const reconnected = hasOpenedSocket;
+      hasOpenedSocket = true;
+      fetchAccount(reconnected)
         .then(renderAccount)
         .catch(() => {});
     };
@@ -1951,7 +1975,7 @@ import { state } from './bridge/state.js';
     if (!page) return;
     page.body.innerHTML = '<div class="qmtui-loading">正在加载个人资料…</div>';
     try {
-      const account = await api('/api/account');
+      const account = await fetchAccount(true);
       if (token !== state.routeToken) return;
       if (!account.loggedIn) {
         page.body.innerHTML = '<div class="qmtui-empty">请先登录 QQ 音乐</div>';
@@ -2600,7 +2624,7 @@ import { state } from './bridge/state.js';
     setupMobileSidebar();
     setupSettingsEntry();
     startProgressTicker();
-    api('/api/account')
+    fetchAccount()
       .then(renderAccount)
       .catch(() => {});
     ensureFavoriteKeys();

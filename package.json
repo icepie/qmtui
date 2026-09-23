@@ -6,7 +6,7 @@
   "scripts": {
     "build": "pnpm typecheck && pnpm web:build",
     "web:recover": "node scripts/recover-web.mjs",
-    "web:build": "node scripts/build-web.mjs && vite build --config web/amll/vite.config.mjs",
+    "web:build": "node scripts/build-web.mjs && pnpm --dir web/amll build",
     "web:check": "node scripts/build-web.mjs --check",
     "check": "biome check web/browser web/amll/src scripts tests/web",
     "check:write": "biome check --write web/browser web/amll/src scripts tests/web",
@@ -15,7 +15,7 @@
     "typecheck": "tsc -p jsconfig.json",
     "test:web": "node --test tests/web/*.test.mjs",
     "test:e2e": "node scripts/e2e-test.mjs",
-    "web:amll": "vite build --config web/amll/vite.config.mjs"
+    "web:amll": "pnpm --dir web/amll build"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

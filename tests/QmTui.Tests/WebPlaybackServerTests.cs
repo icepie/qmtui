@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -260,6 +261,97 @@ public class WebPlaybackServerTests
         Assert.True(state.RootElement.GetProperty("isPlaying").GetBoolean());
         Assert.Equal(12.5, state.RootElement.GetProperty("position").GetDouble());
         Assert.Equal(180, state.RootElement.GetProperty("duration").GetDouble());
+
+        // 进度帧每 400ms 一次：只带易变字段，歌词与队列只在变化时全量下发。
+        Assert.False(state.RootElement.TryGetProperty("lyrics", out _));
+        Assert.False(state.RootElement.TryGetProperty("songList", out _));
+
+        using var full = JsonDocument.Parse(server.GetStateJson("song_change"));
+        Assert.True(full.RootElement.TryGetProperty("lyrics", out _));
+        Assert.True(full.RootElement.TryGetProperty("songList", out _));
+    }
+
+    [Fact]
+    public async Task StaticAssets_RevalidateWithETagAndAreImmutableWhenVersioned()
+    {
+        var entry = await SendRequestAsync("GET /amll/index.html HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        Assert.StartsWith("HTTP/1.1 200 OK\r\n", entry.Headers, StringComparison.Ordinal);
+        Assert.Contains("Cache-Control: no-cache\r\n", entry.Headers, StringComparison.Ordinal);
+
+        string etag = HeaderValue(entry.Headers, "ETag");
+        Assert.NotEmpty(etag);
+
+        var revalidated = await SendRequestAsync($"GET /amll/index.html HTTP/1.1\r\nHost: localhost\r\nIf-None-Match: {etag}\r\n\r\n");
+        Assert.StartsWith("HTTP/1.1 304 Not Modified\r\n", revalidated.Headers, StringComparison.Ordinal);
+        Assert.Empty(revalidated.Body);
+
+        // 带 ?v=<构建版本> 的 URL 内容随版本变化，可以长缓存不再回源。
+        var versioned = await SendRequestAsync("GET /shim.js?v=deadbeef HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        Assert.Contains("Cache-Control: public, max-age=31536000, immutable\r\n", versioned.Headers, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task StaticAssets_NegotiateCompressionWithoutChangingContent()
+    {
+        var plain = await SendRequestAsync("GET /amll/index.html HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: identity\r\n\r\n");
+        Assert.DoesNotContain("Content-Encoding:", plain.Headers, StringComparison.Ordinal);
+
+        var brotli = await SendRequestAsync("GET /amll/index.html HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: gzip, br\r\n\r\n");
+        Assert.Contains("Content-Encoding: br\r\n", brotli.Headers, StringComparison.Ordinal);
+        Assert.True(brotli.Body.Length < plain.Body.Length);
+
+        using (var input = new MemoryStream(brotli.Body))
+        using (var decompressor = new BrotliStream(input, CompressionMode.Decompress))
+        using (var output = new MemoryStream())
+        {
+            await decompressor.CopyToAsync(output);
+            Assert.Equal(plain.Body, output.ToArray());
+        }
+
+        var gzip = await SendRequestAsync("GET /amll/index.html HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: gzip\r\n\r\n");
+        Assert.Contains("Content-Encoding: gzip\r\n", gzip.Headers, StringComparison.Ordinal);
+    }
+
+    /// <summary>起一个临时服务，发一个请求，把响应头和正文完整读回来。</summary>
+    private static async Task<(string Headers, byte[] Body)> SendRequestAsync(string request)
+    {
+        using var server = new WebPlaybackServer();
+        Assert.True(server.Start(ReservePort()));
+
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
+        await using var stream = client.GetStream();
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(request));
+        await stream.FlushAsync();
+
+        string headers = await ReadHttpHeaderBlockAsync(stream);
+        var body = new byte[HeaderLength(headers)];
+        if (body.Length > 0) await ReadExactlyAsync(stream, body);
+        return (headers, body);
+    }
+
+    private static int HeaderLength(string headers)
+    {
+        foreach (var line in headers.Split("\r\n"))
+        {
+            if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+            {
+                return int.TryParse(line["Content-Length:".Length..].Trim(), out int length) ? length : 0;
+            }
+        }
+        return 0;
+    }
+
+    private static string HeaderValue(string headers, string name)
+    {
+        foreach (var line in headers.Split("\r\n"))
+        {
+            if (line.StartsWith(name + ":", StringComparison.OrdinalIgnoreCase))
+            {
+                return line[(name.Length + 1)..].Trim();
+            }
+        }
+        return "";
     }
 
     private static int ReservePort()

@@ -245,7 +245,11 @@ public sealed partial class WebPlaybackServer
 
     private string BuildStateJson(string eventType)
     {
-        var sb = new StringBuilder();
+        // 进度帧每 250~500ms 就发一次，全量重发歌词/队列/账号会让 4Hz 的心跳变成
+        // 每秒几百 KB。这里只带易变字段，客户端把增量帧合并进上一帧即可。
+        bool compact = eventType == "progress";
+
+        var sb = new StringBuilder(compact ? 256 : 1024);
         sb.Append('{');
         sb.Append($"\"type\":\"{eventType}\",");
         sb.Append($"\"isPlaying\":{(IsPlaying ? "true" : "false")},");
@@ -265,7 +269,15 @@ public sealed partial class WebPlaybackServer
         sb.Append($"\"mode\":\"{modeStr}\",");
         sb.Append($"\"qualityTier\":{(int)ActualQualityTier},");
         sb.Append($"\"preferredQualityTier\":{(int)PreferredQualityTier},");
-        sb.Append($"\"qualityBadge\":\"{AudioQualityHelper.GetBadge(ActualQualityTier)}\",");
+        sb.Append($"\"qualityBadge\":\"{AudioQualityHelper.GetBadge(ActualQualityTier)}\"");
+
+        if (compact)
+        {
+            sb.Append('}');
+            return sb.ToString();
+        }
+
+        sb.Append(',');
         sb.Append("\"availableQualityTiers\":[");
         if (AvailableQualities != null)
         {

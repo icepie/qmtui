@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -23,6 +24,34 @@ internal sealed record WebSingerFavoriteResponse(bool IsFavorite);
 public sealed partial class WebPlaybackServer
 {
     private const int WebLibraryPageSize = 50;
+
+    private const int LibraryReadCacheMs = 60_000;
+
+    private sealed record CachedLibraryJson(string Body, long ExpiresAtTick);
+
+    /// <summary>
+    /// 读接口的短 TTL 缓存。一次 /amll/ 首屏要拉几十个歌单分页（每个都是一次上游 QQ 往返），
+    /// 刷新页面、换端、收藏后 refreshLibrary 都不该把它们重新打回上游。库内写操作整体失效，
+    /// 因此最坏情况只有 CLI 侧改动会迟到 60 秒。
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, CachedLibraryJson> s_libraryReadCache = new(StringComparer.Ordinal);
+
+    private static void InvalidateLibraryReadCache() => s_libraryReadCache.Clear();
+
+    /// <summary>命中缓存就直接回包，调用方据此跳过真实请求。</summary>
+    private static async Task<bool> TrySendCachedLibraryJsonAsync(NetworkStream stream, CancellationToken ct)
+    {
+        string? key = RequestPreferences.CacheKey;
+        if (string.IsNullOrEmpty(key) ||
+            !s_libraryReadCache.TryGetValue(key, out var cached) ||
+            Environment.TickCount64 >= cached.ExpiresAtTick)
+        {
+            return false;
+        }
+
+        await SendResponseAsync(stream, 200, "OK", "application/json", cached.Body, ct).ConfigureAwait(false);
+        return true;
+    }
 
     private static async Task HandleLibrarySearchAsync(NetworkStream stream, string rawPath, CancellationToken ct)
     {
@@ -694,6 +723,13 @@ public sealed partial class WebPlaybackServer
     private static async Task SendLibraryJsonAsync<T>(NetworkStream stream, T value, JsonTypeInfo<T> typeInfo, CancellationToken ct)
     {
         var json = JsonSerializer.Serialize(value, typeInfo);
+
+        string? cacheKey = RequestPreferences.CacheKey;
+        if (!string.IsNullOrEmpty(cacheKey))
+        {
+            s_libraryReadCache[cacheKey] = new CachedLibraryJson(json, Environment.TickCount64 + LibraryReadCacheMs);
+        }
+
         await SendResponseAsync(stream, 200, "OK", "application/json", json, ct).ConfigureAwait(false);
     }
     private static Task SendLibraryJsonAsync(NetworkStream stream, WebLibrarySongsResponse value, CancellationToken ct) =>

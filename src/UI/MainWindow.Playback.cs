@@ -41,6 +41,7 @@ public sealed partial class MainWindow
     private string? _currentContextKey;
     private string? _currentCoverFilePath;
     private long _lastConnectBroadcastTick;
+    private long _lastWebProgressBroadcastTick;
 
     private Task PlaySongAsync(Song song) => PlaySongAsync(song, 0, null);
 
@@ -659,7 +660,13 @@ public sealed partial class MainWindow
             _standaloneWebServer.CurrentPositionSeconds = currentSec;
             _standaloneWebServer.TotalDurationSeconds = Math.Max(_activeSong.Duration, _player.TotalDurationSeconds);
             _standaloneWebServer.IsPlaying = _player.IsPlaying || _isWebPlaying;
-            _standaloneWebServer.BroadcastState("progress");
+            // 进度帧只带易变字段，但仍按 400ms 节流：前端自己按本地时钟补间，
+            // 与移动端推送（下方 _connectServer）保持同样的节奏。
+            if (Environment.TickCount64 - _lastWebProgressBroadcastTick > 400)
+            {
+                _lastWebProgressBroadcastTick = Environment.TickCount64;
+                _standaloneWebServer.BroadcastState("progress");
+            }
         }
 
         // 真实收听满 30 秒物理时长门限检测（或超短音频收听超 80%）

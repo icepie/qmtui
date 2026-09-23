@@ -285,26 +285,29 @@ function qmtuiDispatch(data: AudioThreadEvent) {
 
 function initQmtuiBridge() {
 	const frameHandler = (frame: Record<string, unknown>) => {
-		qmtuiLastFrame = frame;
+		// 进度帧是增量的（位置/播放态/音量），合并进上一帧：qmtuiSynthLoadAudio 等
+		// 消费方读的是这份状态，直接替换会让歌曲信息在下一个进度帧后消失。
+		qmtuiLastFrame = qmtuiLastFrame ? { ...qmtuiLastFrame, ...frame } : frame;
+		const state = qmtuiLastFrame;
 		for (const listener of qmtuiFrameListeners) {
 			try {
-				listener(frame);
+				listener(state);
 			} catch (error) {
 				console.error("[qmtui] 状态帧监听失败", error);
 			}
 		}
-		const songList = Array.isArray(frame.songList) ? frame.songList : [];
+		const songList = Array.isArray(state.songList) ? state.songList : [];
 		for (const item of songList as Record<string, unknown>[]) {
 			const key = qmtuiKey(item);
 			if (key) qmtuiSongs.set(key, item);
 		}
-		const song = (frame.song ?? null) as Record<string, unknown> | null;
+		const song = (state.song ?? null) as Record<string, unknown> | null;
 		const songKey = qmtuiKey(song);
 		if (songKey && song) qmtuiSongs.set(songKey, song);
 
-		const isPlaying = Boolean(frame.isPlaying);
-		const position = Number(frame.position) || 0;
-		const volume = Number(frame.volume);
+		const isPlaying = Boolean(state.isPlaying);
+		const position = Number(state.position) || 0;
+		const volume = Number(state.volume);
 
 		if (Array.isArray(frame.lyrics)) {
 			qmtuiLyricCache = (frame.lyrics as Array<Record<string, unknown>>)

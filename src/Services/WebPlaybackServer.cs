@@ -1,7 +1,11 @@
+using System.Collections.Concurrent;
+using System.Globalization;
+using System.IO.Compression;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -312,6 +316,14 @@ public sealed partial class WebPlaybackServer : IDisposable
                 {
                     webSocketKey = line["Sec-WebSocket-Key:".Length..].Trim();
                 }
+                else if (line.StartsWith("Accept-Encoding:", StringComparison.OrdinalIgnoreCase))
+                {
+                    RequestPreferences.AcceptEncoding = line["Accept-Encoding:".Length..].Trim();
+                }
+                else if (line.StartsWith("If-None-Match:", StringComparison.OrdinalIgnoreCase))
+                {
+                    RequestPreferences.IfNoneMatch = line["If-None-Match:".Length..].Trim();
+                }
             }
 
             if (method == "POST" && contentLength > 0)
@@ -341,54 +353,55 @@ public sealed partial class WebPlaybackServer : IDisposable
                 bodyPart = Encoding.UTF8.GetString(bodyBytes);
             }
 
+            // 纯读取的列表/详情接口允许 60 秒短缓存；收藏态这类会立刻变化的端点直接跳过缓存。
+            if (method == "GET" &&
+                (path.StartsWith("/api/library/", StringComparison.Ordinal) || path.StartsWith("/api/singer/", StringComparison.Ordinal)) &&
+                path != "/api/library/playlist/favorite" &&
+                path != "/api/singer/favorite")
+            {
+                RequestPreferences.CacheKey = rawPath;
+            }
+
+            if (method == "GET" && RequestPreferences.CacheKey != null &&
+                await TrySendCachedLibraryJsonAsync(stream, ct).ConfigureAwait(false))
+            {
+                return;
+            }
+
             if (method == "GET")
             {
+                // 带 ?v=<构建版本> 的 URL 与 vite 产物目录（文件名内含内容哈希）可以长缓存：
+                // 内容变化必然伴随 URL 变化，见 scripts/build-web.mjs 的全局版本号。
+                bool versionedAsset = rawPath.Contains("?v=", StringComparison.Ordinal);
+
                 if (path == "/" || path == "/index.html")
                 {
-                    string html = StaticResourceHelper.LoadStaticText("qqmusic/index.html");
-                    await SendResponseAsync(stream, 200, "OK", "text/html; charset=utf-8", html, ct).ConfigureAwait(false);
+                    await SendAssetAsync(stream, "qqmusic/index.html", "text/html; charset=utf-8", immutable: false, ct).ConfigureAwait(false);
                 }
                 else if (path == "/amll" || path == "/amll/" || path == "/amll/index.html")
                 {
                     // 独立的 Apple Music 风格歌词页（AMLL 渲染内核），与主界面互不影响。
-                    string amll = StaticResourceHelper.LoadStaticText("amll/index.html");
-                    await SendResponseAsync(stream, 200, "OK", "text/html; charset=utf-8", amll, ct).ConfigureAwait(false);
+                    await SendAssetAsync(stream, "amll/index.html", "text/html; charset=utf-8", immutable: false, ct).ConfigureAwait(false);
                 }
                 else if (path.StartsWith("/amll/", StringComparison.Ordinal))
                 {
-                    byte[] content = StaticResourceHelper.LoadStaticBytes(path.TrimStart('/'));
-                    bool fallback = content.Length == 0 && !Path.HasExtension(path);
-                    if (fallback)
-                    {
-                        // SPA 深链（如 /amll/settings、/amll/playlist/123）回退到入口页。
-                        // 回退时必须显式用 text/html：按路径推断类型会得到 octet-stream，
-                        // 浏览器会直接把它当成下载。
-                        content = StaticResourceHelper.LoadStaticBytes("amll/index.html");
-                    }
-                    if (content.Length == 0)
-                    {
-                        await SendResponseAsync(stream, 404, "Not Found", "text/plain", "Not Found", ct).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        string contentType = fallback ? "text/html; charset=utf-8" : GetStaticContentType(path);
-                        await SendBinaryResponseAsync(stream, 200, "OK", contentType, content, ct).ConfigureAwait(false);
-                    }
+                    // 无扩展名即 SPA 路由（/amll/settings、/amll/playlist/123），回退到入口页。
+                    bool spaRoute = !Path.HasExtension(path);
+                    bool immutable = !spaRoute && path.StartsWith("/amll/assets/", StringComparison.Ordinal);
+                    await SendAssetAsync(
+                        stream,
+                        path.TrimStart('/'),
+                        spaRoute ? "text/html; charset=utf-8" : GetStaticContentType(path),
+                        immutable,
+                        ct,
+                        fallbackKey: spaRoute ? "amll/index.html" : null).ConfigureAwait(false);
                 }
                 else if (path.StartsWith("/assets/", StringComparison.Ordinal) ||
                          path.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
                          path.EndsWith(".css", StringComparison.OrdinalIgnoreCase))
                 {
                     string relativePath = path.TrimStart('/');
-                    byte[] content = StaticResourceHelper.LoadStaticBytes($"qqmusic/{relativePath}");
-                    if (content.Length == 0)
-                    {
-                        await SendResponseAsync(stream, 404, "Not Found", "text/plain", "Not Found", ct).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        await SendBinaryResponseAsync(stream, 200, "OK", GetStaticContentType(path), content, ct).ConfigureAwait(false);
-                    }
+                    await SendAssetAsync(stream, $"qqmusic/{relativePath}", GetStaticContentType(path), versionedAsset, ct).ConfigureAwait(false);
                 }
                 else if (path == "/cover")
                 {
@@ -504,6 +517,14 @@ public sealed partial class WebPlaybackServer : IDisposable
             }
                 else if (method == "POST")
                 {
+                    // 写操作一律让读缓存失效；换账号同样会改变可见曲库。
+                    if (path.StartsWith("/api/library/", StringComparison.Ordinal) ||
+                        path == "/api/logout" ||
+                        path == "/api/login/cookie")
+                    {
+                        InvalidateLibraryReadCache();
+                    }
+
                     if (path == "/api/browser/noop")
                     {
                         await SendResponseAsync(stream, 200, "OK", "application/json", "{\"code\":0}", ct).ConfigureAwait(false);
@@ -922,15 +943,180 @@ public sealed partial class WebPlaybackServer : IDisposable
         }
     }
 
-    private static async Task SendBinaryResponseAsync(NetworkStream stream, int statusCode, string statusText, string contentType, byte[] body, CancellationToken ct)
+    /// <summary>
+    /// 当前连接的响应协商信息（Accept-Encoding / If-None-Match / 读缓存键）。
+    /// 每个连接一个独立 Task，用 AsyncLocal 传递即可，无需给几十个 handler 逐个加参数。
+    /// </summary>
+    private static class RequestPreferences
     {
-        string headers = $"HTTP/1.1 {statusCode} {statusText}\r\n" +
-                         $"Content-Type: {contentType}\r\n" +
-                         $"Content-Length: {body.Length}\r\n" +
-                         "Access-Control-Allow-Origin: *\r\n" +
-                         "Connection: close\r\n" +
-                         "Cache-Control: no-cache\r\n\r\n";
-        byte[] headerBytes = Encoding.ASCII.GetBytes(headers);
+        private static readonly AsyncLocal<string?> s_acceptEncoding = new();
+        private static readonly AsyncLocal<string?> s_ifNoneMatch = new();
+        private static readonly AsyncLocal<string?> s_cacheKey = new();
+
+        public static string? AcceptEncoding
+        {
+            get => s_acceptEncoding.Value;
+            set => s_acceptEncoding.Value = value;
+        }
+
+        public static string? IfNoneMatch
+        {
+            get => s_ifNoneMatch.Value;
+            set => s_ifNoneMatch.Value = value;
+        }
+
+        /// <summary>非 null 表示这个 GET 的响应可以按原样路径（含查询串）进短缓存。</summary>
+        public static string? CacheKey
+        {
+            get => s_cacheKey.Value;
+            set => s_cacheKey.Value = value;
+        }
+    }
+
+    /// <summary>
+    /// 构建产物在进程生命周期内不会变化，按资源键缓存原文、ETag 与压缩结果：
+    /// 免去每个请求重复读盘（在线曲库页首屏有近百个资源），压缩也只做一次。
+    /// </summary>
+    private sealed class StaticAsset
+    {
+        private readonly Lazy<byte[]> _gzip;
+        private readonly Lazy<byte[]> _brotli;
+
+        public StaticAsset(byte[] raw, string contentType)
+        {
+            Raw = raw;
+            ContentType = contentType;
+            // ETag 取内容摘要：构建产物同名不同内容时仍能正确失效。
+            ETag = '"' + Convert.ToHexString(SHA256.HashData(raw).AsSpan(0, 8)) + '"';
+            _gzip = new Lazy<byte[]>(() => Compress(raw, brotli: false), LazyThreadSafetyMode.ExecutionAndPublication);
+            _brotli = new Lazy<byte[]>(() => Compress(raw, brotli: true), LazyThreadSafetyMode.ExecutionAndPublication);
+        }
+
+        public byte[] Raw { get; }
+        public string ContentType { get; }
+        public string ETag { get; }
+        public byte[] Gzip => _gzip.Value;
+        public byte[] Brotli => _brotli.Value;
+    }
+
+    private const int MinCompressibleBytes = 1024;
+
+    private static readonly ConcurrentDictionary<string, StaticAsset> s_staticAssets = new(StringComparer.Ordinal);
+
+    private static StaticAsset? LoadStaticAsset(string assetKey, string contentType)
+    {
+        if (s_staticAssets.TryGetValue(assetKey, out var cached)) return cached;
+
+        byte[] raw = StaticResourceHelper.LoadStaticBytes(assetKey);
+        // 未命中不落缓存：部署时新增的文件不应被一次早期请求钉死。
+        if (raw.Length == 0) return null;
+
+        var asset = new StaticAsset(raw, contentType);
+        s_staticAssets[assetKey] = asset;
+        return asset;
+    }
+
+    private static byte[] Compress(byte[] data, bool brotli)
+    {
+        using var output = new MemoryStream(Math.Max(64, data.Length / 4));
+        using (Stream compressor = brotli
+                   ? new BrotliStream(output, CompressionLevel.Fastest, leaveOpen: true)
+                   : new GZipStream(output, CompressionLevel.Fastest, leaveOpen: true))
+        {
+            compressor.Write(data, 0, data.Length);
+        }
+        return output.ToArray();
+    }
+
+    /// <summary>按扩展名判断是否值得压缩；图片/字体已经是压缩格式，再套一层只会更大。</summary>
+    private static bool IsCompressible(string contentType) =>
+        contentType.StartsWith("text/", StringComparison.OrdinalIgnoreCase) ||
+        contentType.StartsWith("application/javascript", StringComparison.OrdinalIgnoreCase) ||
+        contentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase) ||
+        contentType.StartsWith("image/svg", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>按 Accept-Encoding 逐个 token 比对（含 q=0 拒绝），避免 Contains("br") 这类误判。</summary>
+    private static bool AcceptsEncoding(string? header, string token)
+    {
+        if (string.IsNullOrEmpty(header)) return false;
+
+        foreach (var part in header.Split(','))
+        {
+            string[] segments = part.Split(';');
+            if (!segments[0].Trim().Equals(token, StringComparison.OrdinalIgnoreCase)) continue;
+
+            foreach (var parameter in segments.Skip(1))
+            {
+                string trimmed = parameter.Trim();
+                if (trimmed.StartsWith("q=", StringComparison.OrdinalIgnoreCase) &&
+                    double.TryParse(trimmed[2..], NumberStyles.Float, CultureInfo.InvariantCulture, out double quality) &&
+                    quality <= 0)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>优先 brotli，其次 gzip；两者都没有或压缩后更大时返回原文。</summary>
+    private static (byte[] Body, string? Encoding) NegotiateEncoding(string contentType, byte[] raw, Func<byte[]> gzip, Func<byte[]> brotli)
+    {
+        if (raw.Length < MinCompressibleBytes || !IsCompressible(contentType)) return (raw, null);
+
+        string? accept = RequestPreferences.AcceptEncoding;
+        byte[]? compressed = null;
+        string? encoding = null;
+        if (AcceptsEncoding(accept, "br")) { compressed = brotli(); encoding = "br"; }
+        else if (AcceptsEncoding(accept, "gzip")) { compressed = gzip(); encoding = "gzip"; }
+
+        return compressed != null && compressed.Length < raw.Length ? (compressed, encoding) : (raw, null);
+    }
+
+    private static async Task SendAssetAsync(NetworkStream stream, string assetKey, string contentType, bool immutable, CancellationToken ct, string? fallbackKey = null)
+    {
+        var asset = LoadStaticAsset(assetKey, contentType);
+        if (asset == null && fallbackKey != null)
+        {
+            asset = LoadStaticAsset(fallbackKey, "text/html; charset=utf-8");
+        }
+
+        if (asset == null)
+        {
+            await SendResponseAsync(stream, 404, "Not Found", "text/plain", "Not Found", ct).ConfigureAwait(false);
+            return;
+        }
+
+        string cacheControl = immutable ? "public, max-age=31536000, immutable" : "no-cache";
+        string? ifNoneMatch = RequestPreferences.IfNoneMatch;
+        if (!string.IsNullOrEmpty(ifNoneMatch) && ifNoneMatch.Contains(asset.ETag, StringComparison.Ordinal))
+        {
+            byte[] notModified = Encoding.ASCII.GetBytes(
+                "HTTP/1.1 304 Not Modified\r\n" +
+                $"ETag: {asset.ETag}\r\n" +
+                $"Cache-Control: {cacheControl}\r\n" +
+                "Access-Control-Allow-Origin: *\r\n" +
+                "Connection: close\r\n\r\n");
+            await stream.WriteAsync(notModified.AsMemory(), ct).ConfigureAwait(false);
+            await stream.FlushAsync(ct).ConfigureAwait(false);
+            return;
+        }
+
+        var (body, encoding) = NegotiateEncoding(asset.ContentType, asset.Raw, () => asset.Gzip, () => asset.Brotli);
+
+        var sb = new StringBuilder(320);
+        sb.Append("HTTP/1.1 200 OK\r\n");
+        sb.Append("Content-Type: ").Append(asset.ContentType).Append("\r\n");
+        sb.Append("Content-Length: ").Append(body.Length).Append("\r\n");
+        sb.Append("ETag: ").Append(asset.ETag).Append("\r\n");
+        sb.Append("Cache-Control: ").Append(cacheControl).Append("\r\n");
+        if (encoding != null) sb.Append("Content-Encoding: ").Append(encoding).Append("\r\n");
+        if (IsCompressible(asset.ContentType)) sb.Append("Vary: Accept-Encoding\r\n");
+        sb.Append("Access-Control-Allow-Origin: *\r\n");
+        sb.Append("Connection: close\r\n\r\n");
+
+        byte[] headerBytes = Encoding.ASCII.GetBytes(sb.ToString());
         await stream.WriteAsync(headerBytes.AsMemory(), ct).ConfigureAwait(false);
         await stream.WriteAsync(body.AsMemory(), ct).ConfigureAwait(false);
         await stream.FlushAsync(ct).ConfigureAwait(false);
@@ -938,8 +1124,10 @@ public sealed partial class WebPlaybackServer : IDisposable
 
     private static string GetStaticContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
     {
-        ".js" => "application/javascript; charset=utf-8",
+        ".js" or ".mjs" => "application/javascript; charset=utf-8",
         ".css" => "text/css; charset=utf-8",
+        ".html" or ".htm" => "text/html; charset=utf-8",
+        ".json" or ".map" => "application/json; charset=utf-8",
         ".svg" => "image/svg+xml",
         ".png" => "image/png",
         ".jpg" or ".jpeg" => "image/jpeg",
@@ -954,16 +1142,21 @@ public sealed partial class WebPlaybackServer : IDisposable
     private static async Task SendResponseAsync(NetworkStream stream, int statusCode, string statusText, string contentType, string content, CancellationToken ct)
     {
         byte[] body = Encoding.UTF8.GetBytes(content);
-        string headers = $"HTTP/1.1 {statusCode} {statusText}\r\n" +
-                         $"Content-Type: {contentType}\r\n" +
-                         $"Content-Length: {body.Length}\r\n" +
-                         $"Access-Control-Allow-Origin: *\r\n" +
-                         $"Connection: close\r\n" +
-                         $"Cache-Control: no-cache, no-store, must-revalidate\r\n\r\n";
+        var (encoded, encoding) = NegotiateEncoding(contentType, body, () => Compress(body, brotli: false), () => Compress(body, brotli: true));
 
-        byte[] headerBytes = Encoding.ASCII.GetBytes(headers);
-        await stream.WriteAsync(headerBytes.AsMemory(0, headerBytes.Length), ct).ConfigureAwait(false);
-        await stream.WriteAsync(body.AsMemory(0, body.Length), ct).ConfigureAwait(false);
+        var sb = new StringBuilder(256);
+        sb.Append("HTTP/1.1 ").Append(statusCode).Append(' ').Append(statusText).Append("\r\n");
+        sb.Append("Content-Type: ").Append(contentType).Append("\r\n");
+        sb.Append("Content-Length: ").Append(encoded.Length).Append("\r\n");
+        sb.Append("Access-Control-Allow-Origin: *\r\n");
+        sb.Append("Connection: close\r\n");
+        if (encoding != null) sb.Append("Content-Encoding: ").Append(encoding).Append("\r\n");
+        if (IsCompressible(contentType)) sb.Append("Vary: Accept-Encoding\r\n");
+        sb.Append("Cache-Control: no-cache, no-store, must-revalidate\r\n\r\n");
+
+        byte[] headerBytes = Encoding.ASCII.GetBytes(sb.ToString());
+        await stream.WriteAsync(headerBytes.AsMemory(), ct).ConfigureAwait(false);
+        await stream.WriteAsync(encoded.AsMemory(), ct).ConfigureAwait(false);
         await stream.FlushAsync(ct).ConfigureAwait(false);
     }
 

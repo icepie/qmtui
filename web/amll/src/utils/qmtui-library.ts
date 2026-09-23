@@ -404,15 +404,30 @@ export async function searchQmtuiCloud(keyword: string): Promise<{
 	return { songs, playlists };
 }
 
-/** 当前「我喜欢」里的歌曲 mid 集合（用于判断某首歌是否已收藏）。 */
-export async function qmtuiFavoriteMids(): Promise<Set<string>> {
-	try {
-		const data = await json("/api/library/favorites/ids");
-		return new Set(((data.mids as string[]) || []).map((mid) => String(mid)));
-	} catch (error) {
-		console.error("[qmtui] 读取收藏列表失败", error);
-		return new Set();
+// 收藏集合在一次页面会话里基本只读：每张 SongCard 各拉一次会把首屏打成十几次同样的
+// 37KB 请求，这里共用一个在途 Promise 并缓存结果，改动收藏时就地更新集合。
+let favoriteMids: Set<string> | null = null;
+let favoriteMidsPromise: Promise<Set<string>> | null = null;
+
+function loadFavoriteMids(): Promise<Set<string>> {
+	if (!favoriteMidsPromise) {
+		favoriteMidsPromise = json("/api/library/favorites/ids")
+			.then((data) => {
+				favoriteMids = new Set(((data.mids as string[]) || []).map((mid) => String(mid)));
+				return favoriteMids;
+			})
+			.catch((error) => {
+				console.error("[qmtui] 读取收藏列表失败", error);
+				favoriteMidsPromise = null; // 失败不固化，下次调用再试
+				return new Set<string>();
+			});
 	}
+	return favoriteMidsPromise;
+}
+
+/** 当前「我喜欢」里的歌曲 mid 集合（用于判断某首歌是否已收藏）。 */
+export function qmtuiFavoriteMids(): Promise<Set<string>> {
+	return favoriteMids ? Promise.resolve(favoriteMids) : loadFavoriteMids();
 }
 
 /** 设置某首歌的「喜欢」状态（交给 CLI 的收藏接口处理）。 */
@@ -423,6 +438,13 @@ export async function qmtuiSetSongFavorite(song: QmtuiSong, favorite: boolean): 
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ song, favorite }),
 		});
+		if (response.ok && favoriteMids) {
+			const mid = String(song.mid || "");
+			if (mid) {
+				if (favorite) favoriteMids.add(mid);
+				else favoriteMids.delete(mid);
+			}
+		}
 		return response.ok;
 	} catch (error) {
 		console.error("[qmtui] 收藏失败", error);
