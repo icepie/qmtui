@@ -10,7 +10,13 @@
  * localStorage（带 TTL），这样刷新页面不必重取整个曲库（1457 首要 12+ 次分页请求）。
  */
 
-type QmtuiSong = Record<string, unknown> & { mid?: string; id?: number };
+type QmtuiSong = Record<string, unknown> & {
+	mid?: string;
+	id?: number;
+	singers?: Array<{ mid?: string; name?: string }>;
+	album?: string;
+	albumMid?: string;
+};
 
 export interface LibSong {
 	id: string;

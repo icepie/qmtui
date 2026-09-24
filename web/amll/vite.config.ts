@@ -87,18 +87,6 @@ const GitMetadataPlugin = (): Plugin => {
 
 // https://vitejs.dev/config/
 export default defineConfig({
-	build: {
-		chunkSizeWarningLimit: 2000,
-		rolldownOptions: {
-			shimMissingExports: true,
-			input: {
-				index: resolve(__dirname, "index.html"),
-				"extension-window": resolve(__dirname, "extension-window.html"),
-				screenshot: resolve(__dirname, "screenshot.html"),
-				"taskbar-lyric": resolve(__dirname, "taskbar-lyric.html"),
-			},
-		},
-	},
 	plugins: [
 		react(),
 		babel({
@@ -166,10 +154,15 @@ export default defineConfig({
 	// 3. to make use of `TAURI_DEBUG` and other env variables
 	// https://tauri.studio/v1/api/config#buildconfig.beforedevcommand
 	envPrefix: ["VITE_", "TAURI_"],
-	// qmtui 修改：作为 /amll 子路径下的页面发布，产物直接落到仓库的 www/amll。
 	base: "/amll/",
+	// qmtui 修改：作为 /amll 子路径下的页面发布，产物直接落到仓库的 www/amll。
+	// 原先这里有两个 `build` 键，后一个会整体覆盖前一个（chunkSizeWarningLimit 与
+	// rolldownOptions.input 被静默丢弃）。浏览器里只有 index.html 一个入口，
+	// extension-window / screenshot / taskbar-lyric 是 Tauri 多窗口用的，故不再声明多入口。
 	build: {
 		outDir: resolve(__dirname, "../../www/amll"),
 		emptyOutDir: true,
+		chunkSizeWarningLimit: 2000,
+		rolldownOptions: { shimMissingExports: true },
 	},
 });

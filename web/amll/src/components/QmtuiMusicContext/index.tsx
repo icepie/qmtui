@@ -32,7 +32,6 @@ import { type FC, useEffect, useRef } from "react";
 import {
 	initAudioThread,
 	listenQmtuiFrames,
-	qmtuiLyricTimeOf,
 	qmtuiQualityAtom,
 	setQmtuiLibraryLookup,
 	setQmtuiQueueProvider,
@@ -169,9 +168,16 @@ export const QmtuiMusicContext: FC = () => {
 				store.set(hideLyricViewAtom, false);
 			}),
 		);
-		// 框架这条回调拿到的事件形态里没有可用的行时间（会把 0 传给 seek，
-		// 造成「点一下就从开头重播」）；真正的行点击由下面的文档监听处理。
-		store.set(onLyricLineClickAtom, { onEmit: () => {} });
+		// 点击歌词行定位：框架的 PrebuiltLyricPlayer 已经把内核播放位置跳到该行起点
+		// （evt.line.getLine().startTime），这里只需把同一时间同步给 CLI。
+		// 用行时间而不是反查文本，副歌里重复的句子才能各自跳到自己那一句。
+		store.set(onLyricLineClickAtom, {
+			onEmit: (evt) => {
+				const startTime = evt?.line?.getLine?.()?.startTime;
+				if (typeof startTime !== "number" || !Number.isFinite(startTime)) return;
+				void post(`/api/seek?pos=${(Math.max(0, startTime) / 1000).toFixed(2)}`);
+			},
+		});
 
 		// 专辑图上方那条控制横条：框架文档说明「通常用于关闭歌词页面」，但它的
 		// onClickControlThumb 回调在浏览器里不触发，这里直接监听点击。
@@ -200,22 +206,6 @@ export const QmtuiMusicContext: FC = () => {
 				store.set(isLyricPageOpenedAtom, false);
 				return;
 			}
-			// qmtui 修改：点击歌词行定位。内核的 DOM 渲染器不发 lyricLineClick 事件，
-			// 所以这里用「点击到的文本 → 歌词行时间」反查，再交给 CLI 跳转。
-			const lineEl = target.closest('[class*="lyricLine"]');
-			if (!lineEl) return;
-			const text = (lineEl.textContent || "").trim();
-			// 同一句歌词会在副歌里重复，按它在渲染列表里的“第几次出现”定位，
-			// 否则点第二次出现会跳到第一次出现的位置。
-			const container = lineEl.closest('[class*="amll-lyric-player"]');
-			const rendered = container
-				? Array.from(container.querySelectorAll('[class*="lyricLine"]')).filter(
-						(el) => (el.textContent || "").trim() === text,
-					)
-				: [lineEl];
-			const ms = qmtuiLyricTimeOf(text, Math.max(0, rendered.indexOf(lineEl)));
-			if (ms === null) return;
-			void post(`/api/seek?pos=${(Math.max(0, ms) / 1000).toFixed(2)}`);
 		};
 		document.addEventListener("click", onDocumentClick, true);
 
@@ -230,21 +220,7 @@ export const QmtuiMusicContext: FC = () => {
 		);
 		const queueSignatureRef = { current: "" };
 
-		// qmtui 修改：AMLL 内核默认不响应歌词行点击，打开后才会发出 lyricLineClick
-		// （框架再转成 onLyricLineClick → 我们已经接到 /api/seek）。
-		let lastCoreProbe = 0;
-		const enableLyricLineClick = (now: number) => {
-			if (now - lastCoreProbe < 1000) return;
-			lastCoreProbe = now;
-			// 内核在浏览器里退化成 div.amll-lyric-player（DOM 渲染器）
-			for (const el of document.querySelectorAll('[class*="amll-lyric-player"]')) {
-				const core = el as HTMLElement & { enableLyricLineClick?: boolean };
-				if (core.enableLyricLineClick !== true) core.enableLyricLineClick = true;
-			}
-		};
-
 		const unlisten = listenQmtuiFrames((frame) => {
-			enableLyricLineClick(performance.now());
 			// qmtui 修改：用 CLI 的队列填充管理器（只填一次），供播放列表面板与
 			// 右键菜单的「播放」「下一首播放」使用；CLI 仍是唯一的播放方，
 			// 所以只写内部列表，不调用会触发播放的 setQueue。

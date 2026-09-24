@@ -7,6 +7,7 @@ import { Link } from "react-router-dom";
 import { Trans, useTranslation } from "react-i18next";
 // qmtui 修改：播放音质选择（帧里带当前档位与可用档位）
 import {
+	QMTUI_QUALITY_KEYS,
 	QMTUI_QUALITY_LABELS,
 	qmtuiQualityAtom,
 	qmtuiSetQuality,

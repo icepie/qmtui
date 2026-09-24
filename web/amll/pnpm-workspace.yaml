@@ -4,3 +4,14 @@ allowBuilds:
   '@swc/core': true
   '@biomejs/biome': true
   '@parcel/watcher': true
+
+# qmtui 修改：AMLL 库取自 JoyElliot/applemusic-like-lyrics 的 prebuilt-player-controls 分支
+# （比已发布版本多出 coverFrameRef / musicInfoProps / playlistControls 等预置控件属性），
+# 用 vendor/ 下的构建产物覆盖 registry 版本，避免同一份库出现两个实例
+# （两份 core 会让 CSS-module 类名不一致，歌词行点击直接失效）。
+overrides:
+  '@applemusic-like-lyrics/core': file:vendor/applemusic-like-lyrics-core-0.6.0.tgz
+  '@applemusic-like-lyrics/lyric': file:vendor/applemusic-like-lyrics-lyric-1.1.0.tgz
+  '@applemusic-like-lyrics/react': file:vendor/applemusic-like-lyrics-react-0.6.0.tgz
+  '@applemusic-like-lyrics/react-full': file:vendor/applemusic-like-lyrics-react-full-0.5.0.tgz
+  '@applemusic-like-lyrics/ttml': file:vendor/applemusic-like-lyrics-ttml-1.0.1.tgz

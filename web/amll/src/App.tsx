@@ -8,16 +8,11 @@ import styles from "./App.module.css";
 import { AppContainer } from "./components/AppContainer/index.tsx";
 import { ExtensionInjectPoint } from "./components/ExtensionInjectPoint/index.tsx";
 import { QmtuiMusicContext } from "./components/QmtuiMusicContext/index.tsx";
-import { LocalMusicContext } from "./components/LocalMusicContext/index.tsx";
 import { MigrationDialog } from "./components/MigrationDialog/index.tsx";
 import { NowPlayingBar } from "./components/NowPlayingBar/index.tsx";
 import { ShotcutContext } from "./components/ShotcutContext/index.tsx";
-import { TaskbarLyricBridge } from "./components/TaskbarLyricBridge/index.tsx";
 import { ThemeManager } from "./components/ThemeManager/index.tsx";
-import { UpdateContext } from "./components/UpdateContext/index.tsx";
-import { WSProtocolMusicContext } from "./components/WSProtocolMusicContext/index.tsx";
 import { useMigration } from "./hooks/useMigration.ts";
-import { enableTaskbarLyricAtom } from "./states/appAtoms.ts";
 import "./i18n";
 import { isLyricPageOpenedAtom } from "@applemusic-like-lyrics/react-full";
 import { StatsComponent } from "./components/StatsComponent/index.tsx";
@@ -37,8 +32,6 @@ const AMLLWrapper = lazy(() => import("./components/AMLLWrapper"));
 function App() {
 	const isLyricPageOpened = useAtomValue(isLyricPageOpenedAtom);
 	const showStatJSFrame = useAtomValue(showStatJSFrameAtom);
-	const enableTaskbarLyric = useAtomValue(enableTaskbarLyricAtom);
-	const musicContextMode = useAtomValue(musicContextModeAtom);
 	const isDarkTheme = useAtomValue(isDarkThemeAtom);
 	const hasBackground = useAtomValue(hasBackgroundAtom);
 

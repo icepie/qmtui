@@ -1,8 +1,8 @@
 # 来源、改动与许可（qmtui 附加应用 /amll）
 
-本目录是 **amll-dev/amll-player** 的前端代码（上游：https://github.com/amll-dev/amll-player ，
-许可 AGPL-3.0，全文见同目录 LICENSE），由 qmtui vendoring 后在浏览器中运行，并做了以下改动
-（均以 `qmtui 修改` 注释标记）：
+本目录是 **JoyElliot/amll-player**（上游 amll-dev/amll-player 的 fork，AGPL-3.0，全文见同目录
+LICENSE）的 `packages/player` 前端代码，由 qmtui vendoring 后在浏览器中运行，并做了以下改动
+（均以 `qmtui 修改` 注释标记）。除下述改动外，源码与 fork 的 `packages/player` 逐字节一致：
 
 1. `vite.config.ts`：挂载到子路径 `/amll`，产物输出到仓库 `www/amll`；把 `@tauri-apps/*`
    指向 `shims/tauri/*` 垫片（浏览器里没有 Tauri 运行时）。
@@ -15,5 +15,30 @@
 5. `src/App.tsx`：移除桌面专属能力（本地文件音源、ws-protocol 音源、任务栏歌词扩展、
    Tauri 更新检查），挂载 `QmtuiMusicContext`。
 6. `index.html`：网页模式下隐藏 Tauri 窗口按钮。
+7. `src/components/QmtuiMusicContext`：点击歌词行交给框架的 `onLyricLineClick`
+   （`evt.line.getLine().startTime`）同步 CLI seek，取代早先「按文本反查第几次出现」的
+   DOM hack —— 副歌里重复的句子以前会全部跳到第一次出现的位置。
+
+## 库依赖来源（vendor/）
+
+AMLL 的库（core / lyric / react / react-full / ttml）取自
+**JoyElliot/applemusic-like-lyrics** 的 `prebuilt-player-controls` 分支
+（提交 `3dc74aaa0a720896888ac05ba8851e2ca8d` 一带；它是 amll-dev 上游的 fork，
+该分支多出 `coverFrameRef` / `musicInfoProps` / `playlistControls` / `playlistOpened` /
+`onPlaylistOpenedChange` / `showMenuButton` / `videoRef` 等预置播放器控件属性，尚未发布到 npm）。
+构建产物已打包进 `vendor/*.tgz`，并在 `pnpm-workspace.yaml` 里用 `overrides` 覆盖 registry 版本。
+
+覆盖是必须的：pnpm 11 起 `package.json` 的 `pnpm.overrides` 已不再生效，若漏掉就会出现
+两份 core（registry + vendor），CSS-module 类名不一致会让内核的 `closest('.lyricLineWrapper')`
+匹配不到，歌词行点击直接失效。
+
+重新生成 vendor 包：
+
+```sh
+git clone --branch prebuilt-player-controls https://github.com/JoyElliot/applemusic-like-lyrics /tmp/amll-lib
+cd /tmp/amll-lib && pnpm install && pnpm run build:libs
+for p in core react react-full lyric ttml; do (cd packages/$p && pnpm pack --pack-destination /tmp/amll-pkgs); done
+cp /tmp/amll-pkgs/*.tgz <repo>/web/amll/vendor/ && cd <repo>/web/amll && pnpm install --no-frozen-lockfile && pnpm build
+```
 
 因此**本目录源码以 AGPL-3.0 提供**；qmtui 其余部分仍为 MIT（见仓库根 LICENSE）。
