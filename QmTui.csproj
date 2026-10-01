@@ -43,7 +43,6 @@
     <InternalsVisibleTo Include="QmTui.Tests" />
   </ItemGroup>
 
-<<<<<<< HEAD
   <!-- Collect generated files only after assembly, including on a clean checkout. -->
   <Target Name="BuildWebAssets" BeforeTargets="AssignTargetPaths" Condition="'$(DesignTimeBuild)' != 'true'">
     <Exec Command="node &quot;$(MSBuildProjectDirectory)/scripts/build-web.mjs&quot;" WorkingDirectory="$(MSBuildProjectDirectory)" />
@@ -52,11 +51,5 @@
       <None Include="www/**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     </ItemGroup>
   </Target>
-=======
-  <ItemGroup>
-    <EmbeddedResource Include="www/**" />
-    <None Update="www/**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Never" />
-  </ItemGroup>
->>>>>>> origin/tui
 
 </Project>
