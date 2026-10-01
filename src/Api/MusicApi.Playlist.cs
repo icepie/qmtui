@@ -341,17 +341,14 @@ public sealed partial class MusicApi
 
         await LoginService.EnsureMusicKeyAsync(false, ct).ConfigureAwait(false);
 
-<<<<<<< HEAD
+        // 201 是「我喜欢」目录，走 Android 专用接口（本分支特判）
         if (dirId == 201)
         {
             return await AddSongToPlaylistAndroidAsync(dirId, songId, ct).ConfigureAwait(false);
         }
 
-        var payload = $"{{\"comm\":{{\"ct\":24,\"cv\":0}}," +
-=======
         var comm = BuildAppCommJson();
         var payload = $"{{\"comm\":{comm}," +
->>>>>>> origin/tui
             $"\"addSongsToPlayList\":{{\"module\":\"music.musicasset.PlaylistDetailWrite\",\"method\":\"AddSonglist\"," +
             $"\"param\":{{\"dirId\":{dirId},\"v_songInfo\":[{{\"songId\":{songId},\"songType\":0}}]}}}}}}";
 
@@ -431,17 +428,14 @@ public sealed partial class MusicApi
 
         await LoginService.EnsureMusicKeyAsync(false, ct).ConfigureAwait(false);
 
-<<<<<<< HEAD
+        // 201 是「我喜欢」目录，走 Android 专用接口（本分支特判）
         if (dirId == 201)
         {
             return await RemoveSongFromPlaylistAndroidAsync(dirId, songId, ct).ConfigureAwait(false);
         }
 
-        var payload = $"{{\"comm\":{{\"ct\":24,\"cv\":0}}," +
-=======
         var comm = BuildAppCommJson();
         var payload = $"{{\"comm\":{comm}," +
->>>>>>> origin/tui
             $"\"delSongsFromPlayList\":{{\"module\":\"music.musicasset.PlaylistDetailWrite\",\"method\":\"DelSonglist\"," +
             $"\"param\":{{\"dirId\":{dirId},\"v_songInfo\":[{{\"songId\":{songId},\"songType\":0}}]}}}}}}";
 
