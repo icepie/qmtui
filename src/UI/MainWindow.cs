@@ -29,6 +29,7 @@ public sealed partial class MainWindow : Window
     private readonly TextField _searchField;
     private readonly FrameView _sidebarFrame;
     private readonly ListView _sidebarList;
+    private readonly MiniCoverView _miniCoverView;
     private readonly SongListView _songListView;
     private readonly FrameView _lyricFrame;
     private readonly ListView _lyricListView;
@@ -85,6 +86,46 @@ public sealed partial class MainWindow : Window
     private AudioQualityTier _preferredQualityTier;
     private AudioQualityTier _actualQualityTier;
 
+    private string? _cachedFormattedLyricsPayload;
+    private string? _cachedFormattedLyricsSongMid;
+    private int _cachedFormattedLyricsCount = -1;
+
+    private string? GetOrBuildFormattedLyricsPayload()
+    {
+        if (_currentLyrics.Count == 0) return null;
+        var currentMid = _activeSong?.Mid ?? "";
+        if (_cachedFormattedLyricsPayload != null &&
+            _cachedFormattedLyricsSongMid == currentMid &&
+            _cachedFormattedLyricsCount == _currentLyrics.Count)
+        {
+            return _cachedFormattedLyricsPayload;
+        }
+
+        var sb = new StringBuilder();
+        foreach (var line in _currentLyrics)
+        {
+            var ts = line.Timestamp;
+            var timeStr = $"[{ts.Minutes:D2}:{ts.Seconds:D2}.{ts.Milliseconds / 10:D2}]";
+            sb.AppendLine($"{timeStr}{line.Text}");
+            if (!string.IsNullOrWhiteSpace(line.Trans))
+            {
+                sb.AppendLine($"{timeStr}{line.Trans}");
+            }
+        }
+
+        _cachedFormattedLyricsSongMid = currentMid;
+        _cachedFormattedLyricsCount = _currentLyrics.Count;
+        _cachedFormattedLyricsPayload = sb.ToString();
+        return _cachedFormattedLyricsPayload;
+    }
+
+    private void InvalidateFormattedLyricsCache()
+    {
+        _cachedFormattedLyricsPayload = null;
+        _cachedFormattedLyricsSongMid = null;
+        _cachedFormattedLyricsCount = -1;
+    }
+
     private string _lastSearchQuery = "";
     private int _searchCurrentPage = 1;
     private bool _hasMoreSearchResults;
@@ -100,6 +141,7 @@ public sealed partial class MainWindow : Window
     private List<Playlist> _cachedPlaylists = [];
     private bool _isViewingPlaylistsList;
     private int _isAddToPlaylistOpen;
+    private readonly HashSet<string> _favoritePendingSongKeys = new();
 
     private Album? _currentDrilldownAlbum;
     private AlbumDetail? _currentAlbumDetail;
@@ -138,6 +180,7 @@ public sealed partial class MainWindow : Window
 
     // 猜你喜欢（个性电台流模式）服务实例
     private readonly RadioService _radioService = RadioService.Instance;
+    private bool IsRadioModeActive => _radioService.IsCurrentSongInRadio(_activeSong) || _currentViewMode == ViewMode.GuessRecommend;
 
     // 终端窗口前后台焦点状态与 ANSI 1004 Focus Reporting 过滤状态机
     public static bool IsTerminalWindowFocused { get; private set; } = true;
@@ -377,7 +420,7 @@ public sealed partial class MainWindow : Window
             X = 0,
             Y = 1,
             Width = 14,
-            Height = Dim.Fill(5),
+            Height = 13,
             CanFocus = true,
             TabStop = Terminal.Gui.ViewBase.TabBehavior.NoStop
         };
@@ -452,6 +495,17 @@ public sealed partial class MainWindow : Window
             }
         };
         Add(_sidebarFrame);
+
+        // 2.1 左侧下半部分常驻直角正方形迷你封面视窗
+        _miniCoverView = new MiniCoverView
+        {
+            X = 0,
+            Y = Pos.Bottom(_sidebarFrame),
+            Width = 14,
+            Height = 8
+        };
+        _miniCoverView.CoverClicked += ToggleNowPlayingView;
+        Add(_miniCoverView);
 
         // 3. 中央歌曲列表视窗（解耦封装）
         _songListView = new SongListView
@@ -897,9 +951,13 @@ public sealed partial class MainWindow : Window
         _controlBar.TabNavigationRequested += forward => SwitchNextFocusWindow(forward);
         _controlBar.PrevClicked += async () =>
         {
-            if (_currentViewMode != ViewMode.GuessRecommend)
+            if (!IsRadioModeActive)
             {
                 await PlayPrevInCurrentListAsync();
+            }
+            else
+            {
+                _controlBar.UpdateStatus("[电台模式] 电台模式不支持上一首");
             }
         };
         _controlBar.PlayPauseClicked += async () =>
@@ -908,7 +966,7 @@ public sealed partial class MainWindow : Window
         };
         _controlBar.NextClicked += async () =>
         {
-            if (_currentViewMode == ViewMode.GuessRecommend)
+            if (IsRadioModeActive)
             {
                 await PlayNextRadioTrackAsync();
             }
@@ -968,7 +1026,7 @@ public sealed partial class MainWindow : Window
         // 底部快捷键操作指南（独立放置在控制栏UI方框下方最底行，干净平整无边框干扰）
         _hotkeyHintLabel = new Label
         {
-            Text = " [V]播放界面  [R]识曲  [A]添加歌单  [B]通知  [M]静音  [/]搜索  [E]队列  [G]查找",
+            Text = " [V]播放界面  [B]通知  [M]静音  [- / +]音量  [/]搜索  [E]队列  [G]查找",
             X = 0,
             Y = Pos.AnchorEnd(1),
             Width = Dim.Fill(),
@@ -985,7 +1043,7 @@ public sealed partial class MainWindow : Window
         // 顶部三大窗格置顶常驻高亮标题（即使未获焦暗化边框线条，标题文本始终保持翡翠薄荷绿高亮）
         _sidebarTitleLabel = new Label
         {
-            Text = "┤导航├",
+            Text = " 导航 ",
             X = 1,
             Y = 1,
             CanFocus = false,
@@ -1003,7 +1061,7 @@ public sealed partial class MainWindow : Window
 
         _songListTitleLabel = new Label
         {
-            Text = "┤歌曲列表 (就绪)├",
+            Text = " 歌曲列表 (就绪) ",
             X = Pos.Right(_sidebarFrame) + 1,
             Y = 1,
             CanFocus = false,
@@ -1022,14 +1080,14 @@ public sealed partial class MainWindow : Window
         {
             Application.Invoke(() =>
             {
-                _songListTitleLabel.Text = $"┤{title}├";
+                _songListTitleLabel.Text = $" {title} ";
                 _songListTitleLabel.SetNeedsDraw();
             });
         };
 
         _lyricTitleLabel = new Label
         {
-            Text = "┤歌词├",
+            Text = " 歌词 ",
             X = Pos.Right(_songListView) + 1,
             Y = 1,
             CanFocus = false,
@@ -1116,13 +1174,21 @@ public sealed partial class MainWindow : Window
         // 窗口整体尺寸改变时同步更新沉浸式播放界面的封面或详情页写真
         ViewportChanged += (s, e) =>
         {
+            UpdateSidebarLayout();
             if (_isNowPlayingViewActive)
             {
                 _nowPlayingView.OnWindowResized();
             }
-            else if (_artistAlbumDetailView.Visible)
+            else
             {
-                _artistAlbumDetailView.OnWindowResized();
+                if (_artistAlbumDetailView.Visible)
+                {
+                    _artistAlbumDetailView.OnWindowResized();
+                }
+                if (_miniCoverView.Visible)
+                {
+                    _miniCoverView.OnWindowResized();
+                }
             }
         };
 
@@ -1152,14 +1218,14 @@ public sealed partial class MainWindow : Window
         {
             Application.Invoke(async () =>
             {
-                if (_currentViewMode == ViewMode.GuessRecommend)
+                if (IsRadioModeActive)
                 {
                     // 电台模式：单曲播放结束后自动平滑跳至下一首
                     await PlayNextRadioTrackAsync();
                     return;
                 }
 
-                if (_songListView.Songs.Count > 0 && _activeSong != null)
+                if ((PlaybackQueueService.Instance.ActiveSongs.Count > 0 || _songListView.Songs.Count > 0) && _activeSong != null)
                 {
                     if (_currentPlaybackMode == PlaybackMode.SingleLoop)
                     {
@@ -1260,6 +1326,34 @@ public sealed partial class MainWindow : Window
         }
 
         RestorePlaybackState();
+        UpdateSidebarLayout();
+    }
+
+    public void UpdateSidebarLayout()
+    {
+        if (_isNowPlayingViewActive || _isAodMode) return;
+
+        int totalHeight = Viewport.Height > 0 ? Viewport.Height : (Application.Driver?.Rows ?? 25);
+        int bottomReserve = _isImmersiveMode ? 0 : 5;
+        int topOffset = _isImmersiveMode ? 0 : 1;
+        int availableHeight = totalHeight - topOffset - bottomReserve;
+
+        const int coverBoxHeight = 8; // 边框 2 行 + 6 行 1:1 正方形满幅小封面（12列宽） = 8 行严丝合缝贴合
+        bool canShowCover = availableHeight >= (12 + coverBoxHeight) && TerminalImageHelper.IsImageSupported;
+        if (canShowCover)
+        {
+            _sidebarFrame.Height = Dim.Fill(bottomReserve + coverBoxHeight);
+            _miniCoverView.Visible = true;
+            _miniCoverView.Y = Pos.Bottom(_sidebarFrame);
+            _miniCoverView.Height = coverBoxHeight;
+            _miniCoverView.TriggerRenderDelayed();
+        }
+        else
+        {
+            _sidebarFrame.Height = Dim.Fill(bottomReserve);
+            _miniCoverView.Visible = false;
+            _miniCoverView.ClearCover();
+        }
     }
 
     private void RestorePlaybackState()
@@ -1311,6 +1405,7 @@ public sealed partial class MainWindow : Window
 
                 // 预加载恢复曲目的全屏信息、封面与歌词
                 _nowPlayingView.SetSong(lastSong, AudioQualityHelper.GetBadge(_actualQualityTier));
+                _miniCoverView.SetSong(lastSong, AudioQualityHelper.GetBadge(_actualQualityTier));
                 _ = Task.Run(async () =>
                 {
                     try
@@ -1320,7 +1415,11 @@ public sealed partial class MainWindow : Window
                         {
                             _currentCoverFilePath = cover;
                             _mprisService.UpdateCover(cover);
-                            Application.Invoke(() => _nowPlayingView.UpdateCover(cover));
+                            Application.Invoke(() =>
+                            {
+                                _nowPlayingView.UpdateCover(cover);
+                                _miniCoverView.UpdateCover(cover);
+                            });
                         }
 
                         List<LyricLine> lyrics;
@@ -1393,7 +1492,8 @@ public sealed partial class MainWindow : Window
     {
         var prevModal = _activeModalDialog;
         _activeModalDialog = dlg;
-        TerminalImageHelper.ClearImages();
+        TerminalImageHelper.DeleteKittyImage(TerminalImageHelper.ImageIdNowPlaying);
+        TerminalImageHelper.DeleteKittyImage(TerminalImageHelper.ImageIdArtistDetail);
         try
         {
             Application.Run(dlg);
@@ -1406,9 +1506,16 @@ public sealed partial class MainWindow : Window
             {
                 _nowPlayingView.RestoreCoverAfterDialog();
             }
-            else if (_currentViewMode == ViewMode.ArtistDetail && _artistAlbumDetailView.Visible)
+            else
             {
-                _artistAlbumDetailView.TriggerImageRenderDelayed();
+                if (_artistAlbumDetailView.Visible)
+                {
+                    _artistAlbumDetailView.TriggerImageRenderDelayed();
+                }
+                if (_miniCoverView.Visible)
+                {
+                    _miniCoverView.TriggerRenderDelayed();
+                }
             }
         }
     }
@@ -1504,11 +1611,17 @@ public sealed partial class MainWindow : Window
         if (UserSession.Current.IsLoggedIn)
         {
             var name = string.IsNullOrEmpty(UserSession.Current.Nick) ? UserSession.Current.Uin : UserSession.Current.Nick;
-            var vip = UserSession.Current.IsVip
-                ? UserSession.Current.VipLevel > 0 ? $" 绿钻LV{UserSession.Current.VipLevel}" : " 绿钻"
-                : "";
-            var musicLevel = UserSession.Current.MusicLevel > 0 ? $" 乐力{UserSession.Current.MusicLevel}" : "";
-            return $"[U] {name}{vip}{musicLevel}";
+            if (UserSession.Current.IsSvip)
+            {
+                var lvl = UserSession.Current.VipLevel > 0 ? $" V{UserSession.Current.VipLevel}" : "";
+                return $"[U] {name} SVIP{lvl}";
+            }
+            if (UserSession.Current.IsVip)
+            {
+                var lvl = UserSession.Current.VipLevel > 0 ? $" V{UserSession.Current.VipLevel}" : "";
+                return $"[U] {name} 绿钻{lvl}";
+            }
+            return $"[U] {name}";
         }
         return "[U] 登录";
     }
@@ -1605,6 +1718,14 @@ public sealed partial class MainWindow : Window
         {
             await ToggleSingerSubModeAsync();
         }
+        else if (_currentViewMode == ViewMode.LocalMusic)
+        {
+            ShowAddFolderDialog();
+        }
+        else if (_currentViewMode == ViewMode.WebDav)
+        {
+            await ToggleWebDavViewModeAsync();
+        }
     }
 
     private async Task OnContextAction2Async()
@@ -1617,6 +1738,21 @@ public sealed partial class MainWindow : Window
         {
             await ToggleSingerSongOrderAsync();
         }
+        else if (_currentViewMode == ViewMode.LocalMusic)
+        {
+            await RescanLocalMusicAsync();
+        }
+        else if (_currentViewMode == ViewMode.WebDav)
+        {
+            if (_isWebDavFlatMode)
+            {
+                await ScanWebDavMetadataAsync();
+            }
+            else
+            {
+                await ImportCurrentWebDavFolderAsync();
+            }
+        }
     }
 
     private async Task OnContextAction3Async()
@@ -1628,6 +1764,14 @@ public sealed partial class MainWindow : Window
         else if (_currentViewMode == ViewMode.ArtistDetail)
         {
             await ToggleSingerFavoriteAsync();
+        }
+        else if (_currentViewMode == ViewMode.LocalMusic)
+        {
+            ShowFolderManageDialog();
+        }
+        else if (_currentViewMode == ViewMode.WebDav)
+        {
+            ShowWebdavManageDialog();
         }
     }
 
@@ -1687,6 +1831,34 @@ public sealed partial class MainWindow : Window
                 _searchAlbumsBtn.SetScheme(isSingerFav ? MikuTheme.SearchCategoryActive : MikuTheme.SearchCategoryDim);
                 break;
 
+            case ViewMode.LocalMusic:
+                _searchSongsBtn.Text = "[A添加目录]";
+                _searchPlaylistsBtn.Text = "[R重新扫描]";
+                _searchAlbumsBtn.Text = "[F管理目录]";
+
+                _searchSongsBtn.Visible = true;
+                _searchPlaylistsBtn.Visible = true;
+                _searchAlbumsBtn.Visible = true;
+
+                _searchSongsBtn.SetScheme(MikuTheme.SearchCategoryDim);
+                _searchPlaylistsBtn.SetScheme(MikuTheme.SearchCategoryDim);
+                _searchAlbumsBtn.SetScheme(MikuTheme.SearchCategoryDim);
+                break;
+
+            case ViewMode.WebDav:
+                _searchSongsBtn.Text = _isWebDavFlatMode ? "[D目录树]" : "[D平铺曲库]";
+                _searchPlaylistsBtn.Text = _isWebDavFlatMode ? "[S嗅探元数据]" : "[A导入目录]";
+                _searchAlbumsBtn.Text = "[F管理站点]";
+
+                _searchSongsBtn.Visible = true;
+                _searchPlaylistsBtn.Visible = true;
+                _searchAlbumsBtn.Visible = true;
+
+                _searchSongsBtn.SetScheme(MikuTheme.SearchCategoryDim);
+                _searchPlaylistsBtn.SetScheme(MikuTheme.SearchCategoryDim);
+                _searchAlbumsBtn.SetScheme(MikuTheme.SearchCategoryDim);
+                break;
+
             default:
                 _searchSongsBtn.Visible = false;
                 _searchPlaylistsBtn.Visible = false;
@@ -1705,7 +1877,7 @@ public sealed partial class MainWindow : Window
     {
         Application.Invoke(() =>
         {
-            _lyricTitleLabel.Text = string.IsNullOrEmpty(text) ? "┤歌词├" : $"┤{text}├";
+            _lyricTitleLabel.Text = string.IsNullOrEmpty(text) ? " 歌词 " : $" {text} ";
             _lyricTitleLabel.SetNeedsDraw();
             _lyricFrame.SetNeedsDraw();
         });

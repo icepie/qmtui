@@ -21,9 +21,7 @@ public sealed partial class PlayerControlBar : FrameView
     private readonly Button _qualityBtn;
     private readonly Button _downloadBtn;
     private readonly Button _modeBtn;
-    private readonly Button _volumeDecBtn;
     private readonly Button _volumeBtn;
-    private readonly Button _volumeIncBtn;
     private readonly Button _prevBtn;
     private readonly Button _playPauseBtn;
     private readonly Button _nextBtn;
@@ -146,100 +144,34 @@ public sealed partial class PlayerControlBar : FrameView
             }
         };
 
-        // 2. 第 0 行右侧控制区：
-        // 音质按钮 [ SQ ] -> 音量减 [ - ] -> 音量数值 [ 100% ] -> 音量加 [ + ]（无需任何多余文字）
+        // 2. 第 0 行右侧控制区（单曲信息与交互）：
+        // 音质按钮在最右侧，左侧依次为转存、分享、添加、收藏（由 UpdateQualityPosition 统一动态布局）
 
-        _volumeIncBtn = new Button
+        _qualityBtn = new Button
         {
-            Text = "+",
-            X = Pos.AnchorEnd(5),
+            Text = "SQ",
+            Width = 8,
+            X = Pos.AnchorEnd(8),
             Y = 0,
             CanFocus = false,
             ShadowStyle = ShadowStyles.None
         };
-        _volumeIncBtn.TabStop = Terminal.Gui.ViewBase.TabBehavior.NoStop;
-        _volumeIncBtn.KeyBindings.Remove(Key.Space);
-        _volumeIncBtn.Accepting += (s, e) =>
+        _qualityBtn.TabStop = Terminal.Gui.ViewBase.TabBehavior.NoStop;
+        _qualityBtn.KeyBindings.Remove(Key.Space);
+        _qualityBtn.Accepting += (s, e) =>
         {
-            _focusedControlIndex = 11;
+            _focusedControlIndex = 7;
             UpdateControlHighlight();
-            VolumeAdjustRequested?.Invoke(10);
+            QualityClicked?.Invoke();
         };
-        Add(_volumeIncBtn);
+        Add(_qualityBtn);
 
-        _volumeBtn = new Button
-        {
-            Text = "80%",
-            X = Pos.AnchorEnd(13),
-            Y = 0,
-            CanFocus = false,
-            ShadowStyle = ShadowStyles.None
-        };
-        _volumeBtn.TabStop = Terminal.Gui.ViewBase.TabBehavior.NoStop;
-        _volumeBtn.KeyBindings.Remove(Key.Space);
-        _volumeBtn.Accepting += (s, e) =>
-        {
-            _focusedControlIndex = 10;
-            UpdateControlHighlight();
-            VolumeMuteToggled?.Invoke();
-        };
-        _volumeBtn.MouseEvent += (s, m) =>
-        {
-            if (m.Flags.HasFlag(MouseFlags.WheeledUp))
-            {
-                _focusedControlIndex = 10;
-                UpdateControlHighlight();
-                VolumeAdjustRequested?.Invoke(5);
-                m.Handled = true;
-            }
-            else if (m.Flags.HasFlag(MouseFlags.WheeledDown))
-            {
-                _focusedControlIndex = 10;
-                UpdateControlHighlight();
-                VolumeAdjustRequested?.Invoke(-5);
-                m.Handled = true;
-            }
-            else if (m.Flags.HasFlag(MouseFlags.LeftButtonClicked) ||
-                     m.Flags.HasFlag(MouseFlags.LeftButtonPressed) ||
-                     m.Flags.HasFlag(MouseFlags.MiddleButtonClicked) ||
-                     m.Flags.HasFlag(MouseFlags.MiddleButtonPressed))
-            {
-                _focusedControlIndex = 10;
-                UpdateControlHighlight();
-                var now = Environment.TickCount64;
-                if (now - _lastMuteClickTicks > 250)
-                {
-                    _lastMuteClickTicks = now;
-                    VolumeMuteToggled?.Invoke();
-                }
-                m.Handled = true;
-            }
-        };
-        Add(_volumeBtn);
-
-        _volumeDecBtn = new Button
-        {
-            Text = "-",
-            X = Pos.AnchorEnd(19),
-            Y = 0,
-            CanFocus = false,
-            ShadowStyle = ShadowStyles.None
-        };
-        _volumeDecBtn.TabStop = Terminal.Gui.ViewBase.TabBehavior.NoStop;
-        _volumeDecBtn.KeyBindings.Remove(Key.Space);
-        _volumeDecBtn.Accepting += (s, e) =>
-        {
-            _focusedControlIndex = 9;
-            UpdateControlHighlight();
-            VolumeAdjustRequested?.Invoke(-10);
-        };
-        Add(_volumeDecBtn);
-
-        // 转存按钮 [ 转存 ] - 放置在第 0 行音量减左侧（间距 1 格）
+        // 转存按钮 [ 转存 ]
         _downloadBtn = new Button
         {
-            Text = "转存",
-            X = Pos.AnchorEnd(28),
+            Text = " 转存 ",
+            Width = 10,
+            X = Pos.AnchorEnd(19),
             Y = 0,
             CanFocus = false,
             ShadowStyle = ShadowStyles.None
@@ -257,24 +189,28 @@ public sealed partial class PlayerControlBar : FrameView
         };
         Add(_downloadBtn);
 
-        // 音质按钮 (Hi-Res / SQ / HQ / 标准) - 紧凑放置在转存按钮左侧（间距 1 格）
-        _qualityBtn = new Button
+        // 分享按钮 [ 分享 ]
+        _shareBtn = new Button
         {
-            Text = "SQ",
-            X = Pos.AnchorEnd(35),
+            Text = "分享",
+            Width = 8,
+            X = Pos.AnchorEnd(28),
             Y = 0,
             CanFocus = false,
             ShadowStyle = ShadowStyles.None
         };
-        _qualityBtn.TabStop = Terminal.Gui.ViewBase.TabBehavior.NoStop;
-        _qualityBtn.KeyBindings.Remove(Key.Space);
-        _qualityBtn.Accepting += (s, e) =>
+        _shareBtn.TabStop = Terminal.Gui.ViewBase.TabBehavior.NoStop;
+        _shareBtn.KeyBindings.Remove(Key.Space);
+        _shareBtn.Accepting += (s, e) =>
         {
-            _focusedControlIndex = 7;
+            _focusedControlIndex = 2;
             UpdateControlHighlight();
-            QualityClicked?.Invoke();
+            if (!_isLocalMode)
+            {
+                ShareClicked?.Invoke();
+            }
         };
-        Add(_qualityBtn);
+        Add(_shareBtn);
 
         // 3. 第 1 行：
         // 左侧：加长高精度进度条 (30格) + 紧邻右侧的 [ 收藏 ] 按钮
@@ -311,9 +247,10 @@ public sealed partial class PlayerControlBar : FrameView
         // 收藏/已收藏 按钮 (快捷键 S) - 放置在音质按钮左侧（第 0 行）
         _favBtn = new Button
         {
-            Text = "[S] 收藏",
+            Text = "[S] 收藏  ",
+            Width = 10,
             NoDecorations = true,
-            X = Pos.AnchorEnd(44),
+            X = Pos.AnchorEnd(50),
             Y = 0,
             CanFocus = false,
             ShadowStyle = ShadowStyles.None
@@ -329,27 +266,15 @@ public sealed partial class PlayerControlBar : FrameView
                 FavoriteClicked?.Invoke();
             }
         };
-        _favBtn.MouseEvent += (s, m) =>
-        {
-            if (m.Flags.HasFlag(MouseFlags.LeftButtonClicked))
-            {
-                _focusedControlIndex = 1;
-                UpdateControlHighlight();
-                if (!_isLocalMode)
-                {
-                    FavoriteClicked?.Invoke();
-                }
-                m.Handled = true;
-            }
-        };
         Add(_favBtn);
 
         // 添加到歌单按钮 - 放置在收藏按钮右边（第 0 行）
         _addBtn = new Button
         {
-            Text = "添加",
+            Text = "[A] 添加  ",
+            Width = 10,
             NoDecorations = true,
-            X = Pos.AnchorEnd(36),
+            X = Pos.AnchorEnd(39),
             Y = 0,
             CanFocus = false,
             ShadowStyle = ShadowStyles.None
@@ -365,26 +290,60 @@ public sealed partial class PlayerControlBar : FrameView
                 AddToPlaylistClicked?.Invoke();
             }
         };
-        _addBtn.MouseEvent += (s, m) =>
+        Add(_addBtn);
+
+        // 3. 第 1 行右侧控制区（播放引擎走带与输出）：
+        // [ 模式 ] -> [ 上一首 ] -> [ 播放/暂停 ] -> [ 下一首 ] -> [ 音量 ]
+
+        _volumeBtn = new Button
         {
-            if (m.Flags.HasFlag(MouseFlags.LeftButtonClicked))
+            Text = "80%",
+            Width = 8,
+            X = Pos.AnchorEnd(8),
+            Y = 1,
+            CanFocus = false,
+            ShadowStyle = ShadowStyles.None
+        };
+        _volumeBtn.TabStop = Terminal.Gui.ViewBase.TabBehavior.NoStop;
+        _volumeBtn.KeyBindings.Remove(Key.Space);
+        _volumeBtn.Accepting += (s, e) =>
+        {
+            _focusedControlIndex = 10;
+            UpdateControlHighlight();
+            HandleVolumeMuteClick();
+        };
+        _volumeBtn.MouseEvent += (s, m) =>
+        {
+            if (m.Flags.HasFlag(MouseFlags.WheeledUp))
             {
-                _focusedControlIndex = 12;
+                _focusedControlIndex = 10;
                 UpdateControlHighlight();
-                if (!_isLocalMode)
-                {
-                    AddToPlaylistClicked?.Invoke();
-                }
+                VolumeAdjustRequested?.Invoke(5);
+                m.Handled = true;
+            }
+            else if (m.Flags.HasFlag(MouseFlags.WheeledDown))
+            {
+                _focusedControlIndex = 10;
+                UpdateControlHighlight();
+                VolumeAdjustRequested?.Invoke(-5);
+                m.Handled = true;
+            }
+            else if (m.Flags.HasFlag(MouseFlags.MiddleButtonClicked))
+            {
+                _focusedControlIndex = 10;
+                UpdateControlHighlight();
+                HandleVolumeMuteClick();
                 m.Handled = true;
             }
         };
-        Add(_addBtn);
+        Add(_volumeBtn);
 
         _nextBtn = new Button
         {
-            Text = "[L] 下一首",
+            Text = "下一首 [L]",
+            Width = 10,
             NoDecorations = true,
-            X = Pos.AnchorEnd(12),
+            X = Pos.AnchorEnd(19),
             Y = 1,
             CanFocus = false,
             ShadowStyle = ShadowStyles.None
@@ -402,7 +361,8 @@ public sealed partial class PlayerControlBar : FrameView
         _playPauseBtn = new Button
         {
             Text = "播放",
-            X = Pos.AnchorEnd(22),
+            Width = 8,
+            X = Pos.AnchorEnd(28),
             Y = 1,
             CanFocus = false,
             ShadowStyle = ShadowStyles.None
@@ -420,8 +380,9 @@ public sealed partial class PlayerControlBar : FrameView
         _prevBtn = new Button
         {
             Text = "[J] 上一首",
+            Width = 10,
             NoDecorations = true,
-            X = Pos.AnchorEnd(34),
+            X = Pos.AnchorEnd(39),
             Y = 1,
             CanFocus = false,
             ShadowStyle = ShadowStyles.None
@@ -439,9 +400,10 @@ public sealed partial class PlayerControlBar : FrameView
         // 播放循环模式按钮 (快捷键 O) - 放在 [上一首] 按钮左侧
         _modeBtn = new Button
         {
-            Text = "[O] 随机",
+            Text = "[O] 随机  ",
+            Width = 10,
             NoDecorations = true,
-            X = Pos.AnchorEnd(44),
+            X = Pos.AnchorEnd(50),
             Y = 1,
             CanFocus = false,
             ShadowStyle = ShadowStyles.None
@@ -456,28 +418,6 @@ public sealed partial class PlayerControlBar : FrameView
         };
         Add(_modeBtn);
 
-        // 分享按钮 - 放在 [播放模式] 按钮左侧
-        _shareBtn = new Button
-        {
-            Text = "分享",
-            X = Pos.AnchorEnd(54),
-            Y = 1,
-            CanFocus = false,
-            ShadowStyle = ShadowStyles.None
-        };
-        _shareBtn.TabStop = Terminal.Gui.ViewBase.TabBehavior.NoStop;
-        _shareBtn.KeyBindings.Remove(Key.Space);
-        _shareBtn.Accepting += (s, e) =>
-        {
-            _focusedControlIndex = 2;
-            UpdateControlHighlight();
-            if (!_isLocalMode)
-            {
-                ShareClicked?.Invoke();
-            }
-        };
-        Add(_shareBtn);
-
         UpdateQualityPosition();
 
         HasFocusChanged += (s, e) =>
@@ -488,7 +428,7 @@ public sealed partial class PlayerControlBar : FrameView
             }
             else
             {
-                if (_focusedControlIndex < 0 || _focusedControlIndex > 11)
+                if (_focusedControlIndex < 0 || _focusedControlIndex > 12)
                 {
                     _focusedControlIndex = 5;
                 }
@@ -573,4 +513,14 @@ public sealed partial class PlayerControlBar : FrameView
         }
     }
 
+    private void HandleVolumeMuteClick()
+    {
+        var now = Environment.TickCount64;
+        if (now - _lastMuteClickTicks < 300)
+        {
+            return;
+        }
+        _lastMuteClickTicks = now;
+        VolumeMuteToggled?.Invoke();
+    }
 }

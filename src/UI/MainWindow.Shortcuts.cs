@@ -545,7 +545,7 @@ public sealed partial class MainWindow
         if (c == 'J')
         {
             k.Handled = true;
-            if (_currentViewMode != ViewMode.GuessRecommend)
+            if (!IsRadioModeActive)
             {
                 await PlayPrevInCurrentListAsync();
             }
@@ -559,7 +559,7 @@ public sealed partial class MainWindow
         if (c == 'L')
         {
             k.Handled = true;
-            if (_currentViewMode == ViewMode.GuessRecommend)
+            if (IsRadioModeActive)
             {
                 await PlayNextRadioTrackAsync();
             }
@@ -693,6 +693,9 @@ public sealed partial class MainWindow
         _controlBar.SetScheme(controlFocused ? MikuTheme.FrameBorderActive : MikuTheme.FrameBorderDim);
         _controlBar.SetNeedsDraw();
 
+        _miniCoverView.SetScheme(MikuTheme.FrameBorderDim);
+        _miniCoverView.SetNeedsDraw();
+
         _sidebarTitleLabel?.SetNeedsDraw();
         _songListTitleLabel?.SetNeedsDraw();
         _lyricTitleLabel?.SetNeedsDraw();
@@ -784,7 +787,7 @@ public sealed partial class MainWindow
         {
             Application.Invoke(async () =>
             {
-                if (_currentViewMode == ViewMode.GuessRecommend)
+                if (IsRadioModeActive)
                 {
                     await PlayNextRadioTrackAsync();
                 }
@@ -800,7 +803,7 @@ public sealed partial class MainWindow
         {
             Application.Invoke(async () =>
             {
-                if (_currentViewMode != ViewMode.GuessRecommend)
+                if (!IsRadioModeActive)
                 {
                     await PlayPrevInCurrentListAsync();
                 }

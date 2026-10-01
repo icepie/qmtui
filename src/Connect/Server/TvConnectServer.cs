@@ -16,7 +16,55 @@ public sealed class TvConnectServer : IDisposable
     private readonly int _port;
     private HttpListener? _listener;
     private CancellationTokenSource? _cts;
-    private readonly ConcurrentDictionary<WebSocket, ConnectDevice> _activeClients = new();
+    private sealed class ClientSession : IDisposable
+    {
+        public WebSocket Socket { get; }
+        public ConnectDevice? Device { get; set; }
+        private readonly SemaphoreSlim _sendLock = new(1, 1);
+        private bool _disposed;
+
+        public ClientSession(WebSocket socket, ConnectDevice? device = null)
+        {
+            Socket = socket;
+            Device = device;
+        }
+
+        public async Task SendAsync(ReadOnlyMemory<byte> bytes, CancellationToken ct = default)
+        {
+            if (Socket.State != WebSocketState.Open || _disposed) return;
+            await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                if (Socket.State != WebSocketState.Open || _disposed) return;
+                await Socket.SendAsync(bytes, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                _sendLock.Release();
+            }
+        }
+
+        public async Task SendSafeAsync(ReadOnlyMemory<byte> bytes)
+        {
+            try
+            {
+                await SendAsync(bytes).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Debug("TvConnectServer", $"Safe send failed: {ex.Message}");
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _sendLock.Dispose();
+        }
+    }
+
+    private readonly ConcurrentDictionary<WebSocket, ClientSession> _activeClients = new();
 
     public int Port => _port;
     public int ActualPort { get; private set; } = 8765;
@@ -44,6 +92,7 @@ public sealed class TvConnectServer : IDisposable
     public event Action<ToggleFavoriteCommand>? ToggleFavoriteRequested;
     public event Action<LyricsScrollPayload>? SyncLyricsScrollRequested;
     public event Action<LyricsSyncPayload>? SyncLyricsRequested;
+    public event Action<SyncQueueChunkCommand>? SyncQueueChunkRequested;
 
     // HTTP 静态资源反向提供
     public Func<string?>? CurrentCoverPathProvider { get; set; }
@@ -168,6 +217,8 @@ public sealed class TvConnectServer : IDisposable
         }
 
         var socket = wsCtx.WebSocket;
+        var session = new ClientSession(socket);
+        _activeClients[socket] = session;
         AppLogger.Info("TvConnectServer", $"WebSocket client connected from {ctx.Request.RemoteEndPoint}");
 
         var buffer = new byte[8192];
@@ -203,9 +254,13 @@ public sealed class TvConnectServer : IDisposable
         }
         finally
         {
-            if (_activeClients.TryRemove(socket, out var disconnectedDev))
+            if (_activeClients.TryRemove(socket, out var disconnectedSession))
             {
-                DeviceDisconnected?.Invoke(disconnectedDev);
+                if (disconnectedSession.Device != null)
+                {
+                    DeviceDisconnected?.Invoke(disconnectedSession.Device);
+                }
+                disconnectedSession.Dispose();
             }
             socket.Dispose();
             AppLogger.Info("TvConnectServer", "WebSocket client disconnected");
@@ -254,7 +309,10 @@ public sealed class TvConnectServer : IDisposable
                         if (isTrusted)
                         {
                             _storage.SavePairedDevice(req.Device);
-                            _activeClients[socket] = req.Device;
+                            if (_activeClients.TryGetValue(socket, out var session))
+                            {
+                                session.Device = req.Device;
+                            }
                             var local = _storage.GetLocalDevice(port: ActualPort);
                             var resp = new PairResponsePayload(
                                 Accepted: true,
@@ -274,7 +332,10 @@ public sealed class TvConnectServer : IDisposable
                                 if (accept)
                                 {
                                     _storage.SavePairedDevice(req.Device);
-                                    _activeClients[socket] = req.Device;
+                                    if (_activeClients.TryGetValue(socket, out var session))
+                                    {
+                                        session.Device = req.Device;
+                                    }
                                     var local = _storage.GetLocalDevice(port: ActualPort);
                                     var resp = new PairResponsePayload(
                                         Accepted: true,
@@ -302,9 +363,13 @@ public sealed class TvConnectServer : IDisposable
                 break;
 
             case ConnectActions.Disconnect:
-                if (_activeClients.TryRemove(socket, out var disconnectedDev))
+                if (_activeClients.TryRemove(socket, out var disconnectedSession))
                 {
-                    DeviceDisconnected?.Invoke(disconnectedDev);
+                    if (disconnectedSession.Device != null)
+                    {
+                        DeviceDisconnected?.Invoke(disconnectedSession.Device);
+                    }
+                    disconnectedSession.Dispose();
                 }
                 try { await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Disconnect", CancellationToken.None).ConfigureAwait(false); } catch { }
                 break;
@@ -413,6 +478,15 @@ public sealed class TvConnectServer : IDisposable
                 }
                 catch { }
                 break;
+
+            case ConnectActions.CmdSyncQueueChunk:
+                try
+                {
+                    var cmd = msg.DecodeData(ConnectJsonContext.Default.SyncQueueChunkCommand);
+                    if (cmd != null) SyncQueueChunkRequested?.Invoke(cmd);
+                }
+                catch { }
+                break;
         }
     }
 
@@ -480,13 +554,12 @@ public sealed class TvConnectServer : IDisposable
         var msg = ConnectMessage.Create(action, "");
         var json = JsonSerializer.Serialize(msg, ConnectJsonContext.Default.ConnectMessage);
         var bytes = Encoding.UTF8.GetBytes(json);
-        var segment = new ArraySegment<byte>(bytes);
 
-        foreach (var ws in _activeClients.Keys)
+        foreach (var session in _activeClients.Values)
         {
-            if (ws.State == WebSocketState.Open)
+            if (session.Socket.State == WebSocketState.Open)
             {
-                _ = ws.SendAsync(segment, WebSocketMessageType.Text, true, CancellationToken.None);
+                _ = session.SendSafeAsync(bytes);
             }
         }
     }
@@ -496,33 +569,38 @@ public sealed class TvConnectServer : IDisposable
         var msg = ConnectMessage.Create(action, data, jsonTypeInfo);
         var json = JsonSerializer.Serialize(msg, ConnectJsonContext.Default.ConnectMessage);
         var bytes = Encoding.UTF8.GetBytes(json);
-        var segment = new ArraySegment<byte>(bytes);
 
-        foreach (var ws in _activeClients.Keys)
+        foreach (var session in _activeClients.Values)
         {
-            if (ws.State == WebSocketState.Open)
+            if (session.Socket.State == WebSocketState.Open)
             {
-                _ = ws.SendAsync(segment, WebSocketMessageType.Text, true, CancellationToken.None);
+                _ = session.SendSafeAsync(bytes);
             }
         }
     }
 
-    private static async Task SendMessageAsync<T>(WebSocket socket, string action, T data, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> jsonTypeInfo)
+    private async Task SendMessageAsync<T>(WebSocket socket, string action, T data, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> jsonTypeInfo)
     {
         if (socket.State != WebSocketState.Open) return;
-        var msg = ConnectMessage.Create(action, data, jsonTypeInfo);
-        var json = JsonSerializer.Serialize(msg, ConnectJsonContext.Default.ConnectMessage);
-        var bytes = Encoding.UTF8.GetBytes(json);
-        await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None).ConfigureAwait(false);
+        if (_activeClients.TryGetValue(socket, out var session))
+        {
+            var msg = ConnectMessage.Create(action, data, jsonTypeInfo);
+            var json = JsonSerializer.Serialize(msg, ConnectJsonContext.Default.ConnectMessage);
+            var bytes = Encoding.UTF8.GetBytes(json);
+            await session.SendAsync(bytes).ConfigureAwait(false);
+        }
     }
 
-    private static async Task SendMessageAsync(WebSocket socket, string action, string payload = "")
+    private async Task SendMessageAsync(WebSocket socket, string action, string payload = "")
     {
         if (socket.State != WebSocketState.Open) return;
-        var msg = ConnectMessage.Create(action, payload);
-        var json = JsonSerializer.Serialize(msg, ConnectJsonContext.Default.ConnectMessage);
-        var bytes = Encoding.UTF8.GetBytes(json);
-        await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None).ConfigureAwait(false);
+        if (_activeClients.TryGetValue(socket, out var session))
+        {
+            var msg = ConnectMessage.Create(action, payload);
+            var json = JsonSerializer.Serialize(msg, ConnectJsonContext.Default.ConnectMessage);
+            var bytes = Encoding.UTF8.GetBytes(json);
+            await session.SendAsync(bytes).ConfigureAwait(false);
+        }
     }
 
     public void Stop()
@@ -536,6 +614,10 @@ public sealed class TvConnectServer : IDisposable
         }
         catch { }
         _listener = null;
+        foreach (var session in _activeClients.Values)
+        {
+            session.Dispose();
+        }
         _activeClients.Clear();
     }
 
@@ -551,9 +633,25 @@ public sealed class TvConnectServer : IDisposable
                 string? coverPath = null;
                 var mid = ctx.Request.QueryString["mid"];
                 var localCoverPath = ctx.Request.QueryString["path"];
+                var coverName = ctx.Request.QueryString["name"];
+
+                // 支持 /cover?name=<cached_cover_filename>
+                if (!string.IsNullOrEmpty(coverName))
+                {
+                    try
+                    {
+                        var safeName = Path.GetFileName(coverName);
+                        var cachedPath = Path.Combine(QmTui.Services.CacheManager.CoversDir, safeName);
+                        if (File.Exists(cachedPath))
+                        {
+                            coverPath = cachedPath;
+                        }
+                    }
+                    catch { }
+                }
 
                 // 优先支持 /cover/local?path=<url_encoded_path>
-                if (!string.IsNullOrEmpty(localCoverPath))
+                if (string.IsNullOrEmpty(coverPath) && !string.IsNullOrEmpty(localCoverPath))
                 {
                     try
                     {
@@ -625,6 +723,33 @@ public sealed class TvConnectServer : IDisposable
                     return;
                 }
             }
+            else if (path.StartsWith("/stream/local"))
+            {
+                var localAudioPath = ctx.Request.QueryString["path"];
+                if (string.IsNullOrEmpty(localAudioPath))
+                {
+                    ctx.Response.StatusCode = (int)HttpStatusCode.NotFound;
+                    ctx.Response.Close();
+                    return;
+                }
+
+                string? decodedPath = null;
+                try
+                {
+                    decodedPath = Uri.UnescapeDataString(localAudioPath);
+                }
+                catch { }
+
+                if (string.IsNullOrEmpty(decodedPath) || !File.Exists(decodedPath))
+                {
+                    ctx.Response.StatusCode = (int)HttpStatusCode.NotFound;
+                    ctx.Response.Close();
+                    return;
+                }
+
+                await ServeLocalAudioStreamAsync(ctx, decodedPath, isHead).ConfigureAwait(false);
+                return;
+            }
             else if (path.StartsWith("/lyrics/"))
             {
                 var lyricsText = CurrentLyricsTextProvider?.Invoke();
@@ -655,6 +780,98 @@ public sealed class TvConnectServer : IDisposable
             }
             catch { }
         }
+    }
+
+    private static async Task ServeLocalAudioStreamAsync(HttpListenerContext ctx, string filePath, bool isHead)
+    {
+        var fi = new FileInfo(filePath);
+        long totalLength = fi.Length;
+        var ext = Path.GetExtension(filePath).ToLowerInvariant();
+        var contentType = ext switch
+        {
+            ".flac" => "audio/flac",
+            ".wav" => "audio/wav",
+            ".ogg" or ".oga" => "audio/ogg",
+            ".m4a" or ".aac" or ".mp4" => "audio/mp4",
+            ".opus" => "audio/opus",
+            _ => "audio/mpeg"
+        };
+
+        var rangeHeader = ctx.Request.Headers["Range"];
+        long start = 0;
+        long end = totalLength - 1;
+        bool isRange = false;
+
+        if (!string.IsNullOrWhiteSpace(rangeHeader) && rangeHeader.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase))
+        {
+            var rangeVal = rangeHeader["bytes=".Length..].Trim();
+            if (rangeVal.StartsWith('-'))
+            {
+                if (long.TryParse(rangeVal[1..], out var suffix))
+                {
+                    start = Math.Max(0, totalLength - suffix);
+                    end = totalLength - 1;
+                    isRange = true;
+                }
+            }
+            else
+            {
+                var parts = rangeVal.Split('-');
+                if (long.TryParse(parts[0], out var s))
+                {
+                    start = s;
+                    isRange = true;
+                }
+                if (parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1]) && long.TryParse(parts[1], out var e))
+                {
+                    end = Math.Min(e, totalLength - 1);
+                    isRange = true;
+                }
+            }
+        }
+
+        if (isRange && (start > end || start >= totalLength || start < 0))
+        {
+            ctx.Response.StatusCode = 416;
+            ctx.Response.Headers.Add("Content-Range", $"bytes */{totalLength}");
+            ctx.Response.Close();
+            return;
+        }
+
+        long contentLength = end - start + 1;
+        ctx.Response.StatusCode = isRange ? (int)HttpStatusCode.PartialContent : (int)HttpStatusCode.OK;
+        ctx.Response.ContentType = contentType;
+        ctx.Response.Headers.Add("Accept-Ranges", "bytes");
+        ctx.Response.Headers.Add("Access-Control-Allow-Origin", "*");
+        if (isRange)
+        {
+            ctx.Response.Headers.Add("Content-Range", $"bytes {start}-{end}/{totalLength}");
+        }
+        ctx.Response.ContentLength64 = contentLength;
+
+        if (isHead)
+        {
+            ctx.Response.Close();
+            return;
+        }
+
+        using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, useAsync: true);
+        if (start > 0)
+        {
+            fs.Seek(start, SeekOrigin.Begin);
+        }
+
+        var buffer = new byte[64 * 1024];
+        long remaining = contentLength;
+        while (remaining > 0)
+        {
+            int toRead = (int)Math.Min(buffer.Length, remaining);
+            int read = await fs.ReadAsync(buffer.AsMemory(0, toRead)).ConfigureAwait(false);
+            if (read <= 0) break;
+            await ctx.Response.OutputStream.WriteAsync(buffer.AsMemory(0, read)).ConfigureAwait(false);
+            remaining -= read;
+        }
+        ctx.Response.Close();
     }
 
     public void Dispose()

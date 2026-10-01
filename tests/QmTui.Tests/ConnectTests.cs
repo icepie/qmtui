@@ -1,7 +1,10 @@
 using System.Text.Json;
+using QmTui.Connect.Discovery;
 using QmTui.Connect.Models;
+using QmTui.Connect.Server;
 using QmTui.Connect.Storage;
 using QmTui.Models;
+using QmTui.Services;
 using QmTui.Utils;
 using Xunit;
 
@@ -78,6 +81,35 @@ public class ConnectTests
         var songWithAlbum = new Song("mid1", "Title", "Artist", "Album", 180, AlbumMid: "001albMid");
         var connectSong = ConnectSong.FromDomainSong(songWithAlbum);
         Assert.Equal("https://y.gtimg.cn/music/photo_new/T002R800x800M000001albMid.jpg?max_age=2592000", connectSong.CoverUrl);
+    }
+
+    [Fact]
+    public void SyncQueueChunkCommand_Serialization_Roundtrip()
+    {
+        var song = new ConnectSong(
+            SongId: 2001,
+            SongMid: "chunk_mid_1",
+            Name: "Chunk Song",
+            Singer: "Chunk Artist"
+        );
+        var cmd = new SyncQueueChunkCommand(
+            SyncId: "sync-uuid-123",
+            ChunkIndex: 0,
+            TotalChunks: 2,
+            Songs: [song],
+            TargetMid: "chunk_mid_1"
+        );
+
+        var json = JsonSerializer.Serialize(cmd, ConnectJsonContext.Default.SyncQueueChunkCommand);
+        var deserialized = JsonSerializer.Deserialize(json, ConnectJsonContext.Default.SyncQueueChunkCommand);
+
+        Assert.NotNull(deserialized);
+        Assert.Equal("sync-uuid-123", deserialized.SyncId);
+        Assert.Equal(0, deserialized.ChunkIndex);
+        Assert.Equal(2, deserialized.TotalChunks);
+        Assert.Single(deserialized.Songs);
+        Assert.Equal("chunk_mid_1", deserialized.Songs[0].SongMid);
+        Assert.Equal("chunk_mid_1", deserialized.TargetMid);
     }
 
     [Fact]
@@ -391,5 +423,241 @@ public class ConnectTests
         Assert.Equal(5, deserialized.AvailableTiers?.Count);
         Assert.Equal("Master", deserialized.AvailableTiers?[4]);
         Assert.Equal(50, deserialized.LyricOffsetMs);
+    }
+
+    [Fact]
+    public void ConnectMdns_DnsSdPacket_IsMarkedAsResponse()
+    {
+        var packet = ConnectMdnsService.BuildCompleteDnsSdPacket("Melodist-TV-1234", "192.168.1.100", 8765, "dev-1", "TV", "tok", "123456");
+        Assert.NotNull(packet);
+        Assert.True(packet.Length > 12);
+
+        // QR bit must be set to 1 (Response)
+        Assert.True((packet[2] & 0x80) != 0);
+
+        // Must reject own response packet as query to prevent multicast feedback storm
+        Assert.False(ConnectMdnsService.ShouldHandleQuery(packet, "Melodist-TV-1234"));
+    }
+
+    [Fact]
+    public void ConnectMdns_ShouldHandleQuery_ValidatesDnsHeader()
+    {
+        // Reject short packet
+        Assert.False(ConnectMdnsService.ShouldHandleQuery(new byte[11], "Melodist-TV-1234"));
+
+        // Reject response packet (QR=1)
+        byte[] responsePacket = new byte[30];
+        responsePacket[2] = 0x84; // QR=1
+        responsePacket[4] = 0x00; responsePacket[5] = 0x01; // QDCOUNT=1
+        Assert.False(ConnectMdnsService.ShouldHandleQuery(responsePacket, "Melodist-TV-1234"));
+
+        // Reject packet with zero questions (QDCOUNT=0)
+        byte[] zeroQdPacket = new byte[30];
+        zeroQdPacket[2] = 0x00; // QR=0
+        zeroQdPacket[4] = 0x00; zeroQdPacket[5] = 0x00; // QDCOUNT=0
+        Assert.False(ConnectMdnsService.ShouldHandleQuery(zeroQdPacket, "Melodist-TV-1234"));
+
+        // Reject query for unrelated service
+        var unrelatedBytes = System.Text.Encoding.ASCII.GetBytes("\0\0\0\0\0\x01\0\0\0\0\0\0_googlecast._tcp.local");
+        Assert.False(ConnectMdnsService.ShouldHandleQuery(unrelatedBytes, "Melodist-TV-1234"));
+
+        // Accept query for melodist-connect service
+        var validBytes = System.Text.Encoding.ASCII.GetBytes("\0\0\0\0\0\x01\0\0\0\0\0\0_melodist-connect._tcp.local");
+        Assert.True(ConnectMdnsService.ShouldHandleQuery(validBytes, "Melodist-TV-1234"));
+    }
+
+    [Fact]
+    public void TvConnectServer_Lifecycle_ManagesClientsSafely()
+    {
+        var storage = new ConnectStorage();
+        using var server = new TvConnectServer(storage, port: 19876);
+        Assert.Equal(0, server.ConnectedCount);
+        Assert.False(server.IsRunning);
+
+        server.Stop();
+        Assert.Equal(0, server.ConnectedCount);
+    }
+
+    [Fact]
+    public void Song_IsLocal_IsWebDav_MutualExclusion()
+    {
+        var localSong = new Song("local_123", "Title", "Artist", "Album", 180)
+        {
+            LocalFilePath = "/music/local.mp3"
+        };
+        Assert.True(localSong.IsLocal);
+        Assert.False(localSong.IsWebDav);
+
+        var webDavSong = new Song("webdav_123", "Title", "Artist", "Album", 180)
+        {
+            WebDavHref = "/dav/music/track.flac",
+            LocalFilePath = "/home/user/.cache/qqmusic-tui/webdav/track.flac"
+        };
+        Assert.True(webDavSong.IsWebDav);
+        Assert.False(webDavSong.IsLocal);
+
+        var connectSong = ConnectSong.FromDomainSong(webDavSong);
+        Assert.True(connectSong.IsWebDav);
+        Assert.False(connectSong.IsLocal);
+    }
+
+    [Fact]
+    public void FromDomainSong_LocalSong_UsesPcLocalPrefixAndStreamDirectUrl_WhenFileExists()
+    {
+        var tempFile = Path.Combine(Path.GetTempPath(), $"qmtui_test_{Guid.NewGuid():N}.flac");
+        File.WriteAllText(tempFile, "fake audio");
+
+        try
+        {
+            var localSong = new Song("local_abcdef123456", "本地曲目", "歌手", "专辑", 200)
+            {
+                LocalFilePath = tempFile
+            };
+
+            var connectSong = ConnectSong.FromDomainSong(localSong, port: 8765);
+
+            // 物理文件在 PC 存在时：广播给移动端时添加 pc_local_ 且 isLocal 为 false，提供 PC /stream/local 直通流
+            Assert.Equal("pc_local_abcdef123456", connectSong.SongMid);
+            Assert.False(connectSong.IsLocal);
+            Assert.StartsWith("http://", connectSong.MediaMid);
+            Assert.Contains("/stream/local?path=", connectSong.MediaMid);
+            Assert.Contains(Uri.EscapeDataString(tempFile), connectSong.MediaMid);
+
+            // 验证反向还原
+            var domainSong = connectSong.ToDomainSong();
+            Assert.Equal("local_abcdef123456", domainSong.Mid);
+            Assert.True(domainSong.IsLocal);
+            Assert.Equal(tempFile, domainSong.LocalFilePath);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void FromDomainSong_MobileLocalSong_PreservesLocalAndDoesNotForgePcStream()
+    {
+        // 模拟从手机端队列传入的手机自有文件（如 /storage/emulated/0/...，PC 本地物理不存在）
+        var mobileSong = new Song("local_mobile123456", "手机本地曲目", "歌手", "专辑", 200)
+        {
+            LocalFilePath = "/storage/emulated/0/Music/sample.flac"
+        };
+
+        var connectSong = ConnectSong.FromDomainSong(mobileSong, port: 8765);
+
+        // PC 本地不存在该物理文件时：严禁转为 pc_local_，严禁伪造 PC stream/local 直通流
+        Assert.Equal("local_mobile123456", connectSong.SongMid);
+        Assert.True(connectSong.IsLocal);
+        Assert.DoesNotContain("/stream/local", connectSong.MediaMid);
+    }
+
+    [Fact]
+    public void ToDomainSong_RestoresLocalPathFromStreamLocalUrl_WhenPathMissing()
+    {
+        var connectSong = new ConnectSong(
+            SongId: 0,
+            SongMid: "pc_local_789xyz",
+            Name: "远程曲目",
+            Singer: "歌手",
+            Album: "专辑",
+            MediaMid: "http://192.168.1.100:8765/stream/local?path=%2Fhome%2Fuser%2FMusic%2Ftest.mp3"
+        );
+
+        var domainSong = connectSong.ToDomainSong();
+        Assert.Equal("local_789xyz", domainSong.Mid);
+        Assert.True(domainSong.IsLocal);
+        Assert.Equal("/home/user/Music/test.mp3", domainSong.LocalFilePath);
+    }
+
+    [Fact]
+    public async Task TvConnectServer_ServesStreamLocalWithRangeAndHead()
+    {
+        var tempFile = Path.Combine(Path.GetTempPath(), $"qmtui_test_stream_{Guid.NewGuid():N}.flac");
+        var testData = new byte[1024];
+        for (int i = 0; i < testData.Length; i++) testData[i] = (byte)(i % 256);
+        await File.WriteAllBytesAsync(tempFile, testData);
+
+        try
+        {
+            var storage = new ConnectStorage();
+            using var server = new TvConnectServer(storage, port: 18765);
+            server.Start();
+
+            using var httpClient = new System.Net.Http.HttpClient();
+            var encodedPath = Uri.EscapeDataString(tempFile);
+            var streamUrl = $"http://127.0.0.1:{server.ActualPort}/stream/local?path={encodedPath}";
+
+            // 1. 测试 HEAD 请求
+            var headReq = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Head, streamUrl);
+            var headResp = await httpClient.SendAsync(headReq);
+            Assert.Equal(System.Net.HttpStatusCode.OK, headResp.StatusCode);
+            Assert.Equal("audio/flac", headResp.Content.Headers.ContentType?.MediaType);
+            Assert.Equal(1024, headResp.Content.Headers.ContentLength);
+            Assert.True(headResp.Headers.Contains("Accept-Ranges"));
+
+            // 2. 测试 Range: bytes=10-19 分片请求
+            var rangeReq = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, streamUrl);
+            rangeReq.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(10, 19);
+            var rangeResp = await httpClient.SendAsync(rangeReq);
+            Assert.Equal(System.Net.HttpStatusCode.PartialContent, rangeResp.StatusCode);
+            Assert.Equal(10, rangeResp.Content.Headers.ContentLength);
+            Assert.Equal("bytes 10-19/1024", rangeResp.Content.Headers.GetValues("Content-Range").FirstOrDefault());
+            var chunk = await rangeResp.Content.ReadAsByteArrayAsync();
+            Assert.Equal(10, chunk.Length);
+            for (int i = 0; i < 10; i++)
+            {
+                Assert.Equal(testData[10 + i], chunk[i]);
+            }
+
+            // 3. 测试 416 超范围
+            var badRangeReq = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, streamUrl);
+            badRangeReq.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(2000, 3000);
+            var badRangeResp = await httpClient.SendAsync(badRangeReq);
+            Assert.Equal(System.Net.HttpStatusCode.RequestedRangeNotSatisfiable, badRangeResp.StatusCode);
+
+            // 4. 测试 404 不存在文件
+            var notFoundUrl = $"http://127.0.0.1:{server.ActualPort}/stream/local?path=%2Fnot_found_file.flac";
+            var notFoundResp = await httpClient.GetAsync(notFoundUrl);
+            Assert.Equal(System.Net.HttpStatusCode.NotFound, notFoundResp.StatusCode);
+
+            server.Stop();
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task TvConnectServer_ServesCachedCoverByName()
+    {
+        var coverDir = CacheManager.CoversDir;
+        Directory.CreateDirectory(coverDir);
+        var coverFilename = $"test_cover_{Guid.NewGuid():N}.jpg";
+        var coverFilePath = Path.Combine(coverDir, coverFilename);
+        var dummyCoverData = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46 };
+        await File.WriteAllBytesAsync(coverFilePath, dummyCoverData);
+
+        try
+        {
+            var storage = new ConnectStorage();
+            using var server = new TvConnectServer(storage, port: 18775);
+            server.Start();
+
+            using var httpClient = new System.Net.Http.HttpClient();
+            var coverUrl = $"http://127.0.0.1:{server.ActualPort}/cover?name={coverFilename}";
+            var resp = await httpClient.GetAsync(coverUrl);
+            Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
+            Assert.Equal("image/jpeg", resp.Content.Headers.ContentType?.MediaType);
+            var bytes = await resp.Content.ReadAsByteArrayAsync();
+            Assert.Equal(dummyCoverData, bytes);
+
+            server.Stop();
+        }
+        finally
+        {
+            if (File.Exists(coverFilePath)) File.Delete(coverFilePath);
+        }
     }
 }

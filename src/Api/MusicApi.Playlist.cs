@@ -300,26 +300,66 @@ public sealed partial class MusicApi
         return await AddSongToPlaylistInternalAsync(dirId, songId, canRetryWithRenew: true, ct).ConfigureAwait(false);
     }
 
+    private static string BuildAppCommJson()
+    {
+        var escapedUin = JsonEncodedText.Encode(UserSession.Current.Uin).ToString();
+        var escapedKey = JsonEncodedText.Encode(UserSession.Current.MusicKey).ToString();
+        var loginType = GetCurrentLoginType();
+        return $"{{\"ct\":11,\"cv\":14090008,\"v\":14090008,\"chid\":\"10003505\",\"tmeAppID\":\"qqmusic\",\"tmeLoginType\":{loginType},\"qq\":\"{escapedUin}\",\"authst\":\"{escapedKey}\"}}";
+    }
+
+    private static async Task<string> PostAppMusicuAsync(string jsonPayload, CancellationToken ct = default)
+    {
+        var url = "https://u.y.qq.com/cgi-bin/musicu.fcg";
+        using var req = new HttpRequestMessage(HttpMethod.Post, url);
+        req.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+        req.Headers.TryAddWithoutValidation("User-Agent", "QQMusic 14090008(android 14)");
+
+        var cookieHeader = UserSession.Current.GetCookieHeader();
+        if (!string.IsNullOrEmpty(cookieHeader))
+        {
+            req.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
+        }
+
+        using var resp = await s_httpClient.SendAsync(req, ct).ConfigureAwait(false);
+        resp.EnsureSuccessStatusCode();
+        var bytes = await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return Encoding.UTF8.GetString(bytes);
+        }
+        catch
+        {
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+            return Encoding.GetEncoding("GBK").GetString(bytes);
+        }
+    }
+
     private static async Task<bool> AddSongToPlaylistInternalAsync(long dirId, long songId, bool canRetryWithRenew, CancellationToken ct)
     {
         if (!UserSession.Current.IsLoggedIn || songId <= 0) return false;
 
         await LoginService.EnsureMusicKeyAsync(false, ct).ConfigureAwait(false);
 
+<<<<<<< HEAD
         if (dirId == 201)
         {
             return await AddSongToPlaylistAndroidAsync(dirId, songId, ct).ConfigureAwait(false);
         }
 
         var payload = $"{{\"comm\":{{\"ct\":24,\"cv\":0}}," +
+=======
+        var comm = BuildAppCommJson();
+        var payload = $"{{\"comm\":{comm}," +
+>>>>>>> origin/tui
             $"\"addSongsToPlayList\":{{\"module\":\"music.musicasset.PlaylistDetailWrite\",\"method\":\"AddSonglist\"," +
             $"\"param\":{{\"dirId\":{dirId},\"v_songInfo\":[{{\"songId\":{songId},\"songType\":0}}]}}}}}}";
 
         try
         {
-            AppLogger.Info("MusicApi", $"AddSongToPlaylistAsync (AG-1) requesting: dirId={dirId}, songId={songId}");
-            var json = await PostAg1Async(payload, ct).ConfigureAwait(false);
-            AppLogger.Info("MusicApi", $"AddSongToPlaylistAsync (AG-1) response: {json}");
+            AppLogger.Info("MusicApi", $"AddSongToPlaylistAsync (App-CGI) requesting: dirId={dirId}, songId={songId}");
+            var json = await PostAppMusicuAsync(payload, ct).ConfigureAwait(false);
+            AppLogger.Info("MusicApi", $"AddSongToPlaylistAsync (App-CGI) response: {json}");
 
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
@@ -349,9 +389,9 @@ public sealed partial class MusicApi
                     return true;
                 }
 
-                if ((code == 1000 || code == 10000) && canRetryWithRenew)
+                if ((code == 1000 || code == 10000 || code == 80105) && canRetryWithRenew)
                 {
-                    AppLogger.Info("MusicApi", $"AddSongToPlaylistAsync returned auth error {code}, attempting credential renewal...");
+                    AppLogger.Info("MusicApi", $"AddSongToPlaylistAsync returned auth/rate error {code}, attempting credential renewal...");
                     var renewed = await LoginService.EnsureMusicKeyAsync(forceRefresh: true, ct).ConfigureAwait(false);
                     if (renewed)
                     {
@@ -359,13 +399,20 @@ public sealed partial class MusicApi
                     }
                 }
 
-                AppLogger.Warn("MusicApi", $"AddSongToPlaylistAsync (AG-1) returned non-zero code: {code}");
+                if (code == 2001 && canRetryWithRenew)
+                {
+                    AppLogger.Info("MusicApi", $"AddSongToPlaylistAsync returned code 2001 (index sync delay), retrying in 800ms...");
+                    await Task.Delay(800, ct).ConfigureAwait(false);
+                    return await AddSongToPlaylistInternalAsync(dirId, songId, canRetryWithRenew: false, ct).ConfigureAwait(false);
+                }
+
+                AppLogger.Warn("MusicApi", $"AddSongToPlaylistAsync (App-CGI) returned non-zero code: {code}");
             }
             return false;
         }
         catch (Exception ex)
         {
-            AppLogger.Error("MusicApi", $"AddSongToPlaylistAsync (AG-1) exception for dirId={dirId}, songId={songId}", ex);
+            AppLogger.Error("MusicApi", $"AddSongToPlaylistAsync (App-CGI) exception for dirId={dirId}, songId={songId}", ex);
             return false;
         }
     }
@@ -384,20 +431,25 @@ public sealed partial class MusicApi
 
         await LoginService.EnsureMusicKeyAsync(false, ct).ConfigureAwait(false);
 
+<<<<<<< HEAD
         if (dirId == 201)
         {
             return await RemoveSongFromPlaylistAndroidAsync(dirId, songId, ct).ConfigureAwait(false);
         }
 
         var payload = $"{{\"comm\":{{\"ct\":24,\"cv\":0}}," +
+=======
+        var comm = BuildAppCommJson();
+        var payload = $"{{\"comm\":{comm}," +
+>>>>>>> origin/tui
             $"\"delSongsFromPlayList\":{{\"module\":\"music.musicasset.PlaylistDetailWrite\",\"method\":\"DelSonglist\"," +
             $"\"param\":{{\"dirId\":{dirId},\"v_songInfo\":[{{\"songId\":{songId},\"songType\":0}}]}}}}}}";
 
         try
         {
-            AppLogger.Info("MusicApi", $"RemoveSongFromPlaylistAsync (AG-1) requesting: dirId={dirId}, songId={songId}");
-            var json = await PostAg1Async(payload, ct).ConfigureAwait(false);
-            AppLogger.Info("MusicApi", $"RemoveSongFromPlaylistAsync (AG-1) response: {json}");
+            AppLogger.Info("MusicApi", $"RemoveSongFromPlaylistAsync (App-CGI) requesting: dirId={dirId}, songId={songId}");
+            var json = await PostAppMusicuAsync(payload, ct).ConfigureAwait(false);
+            AppLogger.Info("MusicApi", $"RemoveSongFromPlaylistAsync (App-CGI) response: {json}");
 
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
@@ -418,9 +470,9 @@ public sealed partial class MusicApi
                     return true;
                 }
 
-                if ((code == 1000 || code == 10000) && canRetryWithRenew)
+                if ((code == 1000 || code == 10000 || code == 80105) && canRetryWithRenew)
                 {
-                    AppLogger.Info("MusicApi", $"RemoveSongFromPlaylistAsync returned auth error {code}, attempting credential renewal...");
+                    AppLogger.Info("MusicApi", $"RemoveSongFromPlaylistAsync returned auth/rate error {code}, attempting credential renewal...");
                     var renewed = await LoginService.EnsureMusicKeyAsync(forceRefresh: true, ct).ConfigureAwait(false);
                     if (renewed)
                     {
@@ -428,13 +480,20 @@ public sealed partial class MusicApi
                     }
                 }
 
-                AppLogger.Warn("MusicApi", $"RemoveSongFromPlaylistAsync (AG-1) returned non-zero code: {code}");
+                if (code == 2001 && canRetryWithRenew)
+                {
+                    AppLogger.Info("MusicApi", $"RemoveSongFromPlaylistAsync returned code 2001 (index sync delay), retrying in 800ms...");
+                    await Task.Delay(800, ct).ConfigureAwait(false);
+                    return await RemoveSongFromPlaylistInternalAsync(dirId, songId, canRetryWithRenew: false, ct).ConfigureAwait(false);
+                }
+
+                AppLogger.Warn("MusicApi", $"RemoveSongFromPlaylistAsync (App-CGI) returned non-zero code: {code}");
             }
             return false;
         }
         catch (Exception ex)
         {
-            AppLogger.Error("MusicApi", $"RemoveSongFromPlaylistAsync (AG-1) exception for dirId={dirId}, songId={songId}", ex);
+            AppLogger.Error("MusicApi", $"RemoveSongFromPlaylistAsync (App-CGI) exception for dirId={dirId}, songId={songId}", ex);
             return false;
         }
     }
@@ -642,9 +701,10 @@ public sealed partial class MusicApi
         await LoginService.EnsureMusicKeyAsync(ct).ConfigureAwait(false);
 
         var escapedName = JsonEncodedText.Encode(name.Trim()).ToString();
+        var comm = BuildAppCommJson();
         var payload = $$"""
         {
-          "comm": { "ct": 24, "cv": 0 },
+          "comm": {{comm}},
           "createNewPlayList": {
             "module": "music.musicasset.PlaylistBaseWrite",
             "method": "AddPlaylist",
@@ -661,9 +721,9 @@ public sealed partial class MusicApi
 
         try
         {
-            AppLogger.Info("MusicApi", $"CreatePlaylistAsync requesting: name={name}");
-            var json = await PostAg1Async(payload, ct).ConfigureAwait(false);
-            AppLogger.Info("MusicApi", $"CreatePlaylistAsync response: {json}");
+            AppLogger.Info("MusicApi", $"CreatePlaylistAsync (App-CGI) requesting: name={name}");
+            var json = await PostAppMusicuAsync(payload, ct).ConfigureAwait(false);
+            AppLogger.Info("MusicApi", $"CreatePlaylistAsync (App-CGI) response: {json}");
 
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
@@ -705,7 +765,7 @@ public sealed partial class MusicApi
         }
         catch (Exception ex)
         {
-            AppLogger.Error("MusicApi", $"CreatePlaylistAsync exception for name={name}", ex);
+            AppLogger.Error("MusicApi", $"CreatePlaylistAsync (App-CGI) exception for name={name}", ex);
             return (false, 0, ex.Message);
         }
     }
@@ -904,13 +964,14 @@ public sealed partial class MusicApi
 
         try
         {
+            var comm = BuildAppCommJson();
             if (!playlist.IsFav)
             {
                 // 自建歌单删除 (music.musicasset.PlaylistBaseWrite/DelPlaylist)
                 long dirId = playlist.DirId;
                 var payload = $$"""
                 {
-                  "comm": { "ct": 24, "cv": 0 },
+                  "comm": {{comm}},
                   "deletePlayList": {
                     "module": "music.musicasset.PlaylistBaseWrite",
                     "method": "DelPlaylist",
@@ -921,9 +982,9 @@ public sealed partial class MusicApi
                 }
                 """;
 
-                AppLogger.Info("MusicApi", $"DeletePlaylistAsync (created) requesting: dirId={dirId}");
-                var json = await PostAg1Async(payload, ct).ConfigureAwait(false);
-                AppLogger.Info("MusicApi", $"DeletePlaylistAsync (created) response: {json}");
+                AppLogger.Info("MusicApi", $"DeletePlaylistAsync (App-CGI/created) requesting: dirId={dirId}");
+                var json = await PostAppMusicuAsync(payload, ct).ConfigureAwait(false);
+                AppLogger.Info("MusicApi", $"DeletePlaylistAsync (App-CGI/created) response: {json}");
 
                 using var doc = JsonDocument.Parse(json);
                 if (doc.RootElement.TryGetProperty("deletePlayList", out var delObj) &&
@@ -939,7 +1000,7 @@ public sealed partial class MusicApi
                 long dissId = playlist.Tid > 0 ? playlist.Tid : playlist.DirId;
                 var payload = $$"""
                 {
-                  "comm": { "ct": 24, "cv": 0 },
+                  "comm": {{comm}},
                   "deleteFavPlayList": {
                     "module": "music.musicasset.PlaylistFavWrite",
                     "method": "CancelFavPlaylist",
@@ -950,9 +1011,9 @@ public sealed partial class MusicApi
                 }
                 """;
 
-                AppLogger.Info("MusicApi", $"DeletePlaylistAsync (fav) requesting: dissId={dissId}");
-                var json = await PostAg1Async(payload, ct).ConfigureAwait(false);
-                AppLogger.Info("MusicApi", $"DeletePlaylistAsync (fav) response: {json}");
+                AppLogger.Info("MusicApi", $"DeletePlaylistAsync (App-CGI/fav) requesting: dissId={dissId}");
+                var json = await PostAppMusicuAsync(payload, ct).ConfigureAwait(false);
+                AppLogger.Info("MusicApi", $"DeletePlaylistAsync (App-CGI/fav) response: {json}");
 
                 using var doc = JsonDocument.Parse(json);
                 if (doc.RootElement.TryGetProperty("deleteFavPlayList", out var favObj) &&
@@ -965,7 +1026,7 @@ public sealed partial class MusicApi
         }
         catch (Exception ex)
         {
-            AppLogger.Error("MusicApi", $"DeletePlaylistAsync exception for playlist {playlist.Title}", ex);
+            AppLogger.Error("MusicApi", $"DeletePlaylistAsync (App-CGI) exception for playlist {playlist.Title}", ex);
             return false;
         }
     }

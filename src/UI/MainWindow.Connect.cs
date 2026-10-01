@@ -16,6 +16,8 @@ public sealed partial class MainWindow
     private TvConnectServer? _connectServer;
     private ConnectMdnsService? _connectMdns;
     private string? _lastRemoteSyncedSongMid;
+    private string? _currentQueueSyncId;
+    private readonly Dictionary<int, List<Song>> _queueSyncChunks = new();
 
     private void SetupConnectService()
     {
@@ -42,10 +44,33 @@ public sealed partial class MainWindow
                 {
                     try
                     {
+                        _currentQueueSyncId = null;
+                        _queueSyncChunks.Clear();
+
                         var song = cmd.Song.ToDomainSong();
+                        if (!string.IsNullOrEmpty(song.LocalFilePath) &&
+                            !song.LocalFilePath.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                            !song.LocalFilePath.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
+                            !File.Exists(song.LocalFilePath))
+                        {
+                            song.LocalFilePath = null;
+                        }
+
                         if (cmd.Queue != null && cmd.Queue.Count > 0)
                         {
-                            var domainQueue = cmd.Queue.Select(q => q.ToDomainSong()).ToList();
+                            var domainQueue = cmd.Queue.Select(q =>
+                            {
+                                var s = q.ToDomainSong();
+                                if (!string.IsNullOrEmpty(s.LocalFilePath) &&
+                                    !s.LocalFilePath.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                                    !s.LocalFilePath.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
+                                    !File.Exists(s.LocalFilePath))
+                                {
+                                    s.LocalFilePath = null;
+                                }
+                                return s;
+                            }).ToList();
+
                             var validIdx = Math.Clamp(cmd.Index, 0, Math.Max(0, domainQueue.Count - 1));
                             PlaybackQueueService.Instance.SetQueue(domainQueue, validIdx);
                         }
@@ -79,6 +104,33 @@ public sealed partial class MainWindow
                             }
                         }
 
+                        // 本地流直通回环绕过 (Loopback Bypass)：
+                        // 若 overrideUrl 指向本机的 /stream/local?path=...，直接解析为本地物理文件播放，消除本机 HTTP 代理开销
+                        if (!string.IsNullOrEmpty(overrideUrl) && overrideUrl.Contains("/stream/local"))
+                        {
+                            var qIdx = overrideUrl.IndexOf("path=", StringComparison.OrdinalIgnoreCase);
+                            if (qIdx >= 0)
+                            {
+                                try
+                                {
+                                    var pathPart = overrideUrl[(qIdx + 5)..].Split('&')[0];
+                                    var localPath = Uri.UnescapeDataString(pathPart);
+                                    if (File.Exists(localPath))
+                                    {
+                                        overrideUrl = localPath;
+                                        song.LocalFilePath = localPath;
+                                    }
+                                    else if (overrideUrl.Contains($":{_connectServer.ActualPort}/stream/local"))
+                                    {
+                                        AppLogger.Warn("MainWindow.Connect", $"Detected loopback stream for missing PC file: {localPath}, clearing overrideUrl to request mobile stream proxy");
+                                        overrideUrl = null;
+                                        song = song with { MediaMid = song.Mid };
+                                    }
+                                }
+                                catch { }
+                            }
+                        }
+
                         await PlaySongAsync(song, startPosition: cmd.StartPositionMs / 1000.0, overridePlayUrl: overrideUrl).ConfigureAwait(false);
                         BroadcastConnectPlayerState();
                         BroadcastConnectQueueState();
@@ -86,6 +138,64 @@ public sealed partial class MainWindow
                     catch (Exception ex)
                     {
                         AppLogger.Error("MainWindow.Connect", "PlaySongRequested error", ex);
+                    }
+                });
+            };
+
+            _connectServer.SyncQueueChunkRequested += cmd =>
+            {
+                Application.Invoke(() =>
+                {
+                    try
+                    {
+                        if (_currentQueueSyncId != cmd.SyncId)
+                        {
+                            _currentQueueSyncId = cmd.SyncId;
+                            _queueSyncChunks.Clear();
+                        }
+
+                        var chunkSongs = cmd.Songs?.Select(q =>
+                        {
+                            var s = q.ToDomainSong();
+                            if (!string.IsNullOrEmpty(s.LocalFilePath) &&
+                                !s.LocalFilePath.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                                !s.LocalFilePath.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
+                                !File.Exists(s.LocalFilePath))
+                            {
+                                s.LocalFilePath = null;
+                            }
+                            return s;
+                        }).ToList() ?? [];
+
+                        _queueSyncChunks[cmd.ChunkIndex] = chunkSongs;
+
+                        if (_queueSyncChunks.Count == cmd.TotalChunks)
+                        {
+                            var fullList = new List<Song>();
+                            for (int i = 0; i < cmd.TotalChunks; i++)
+                            {
+                                if (_queueSyncChunks.TryGetValue(i, out var list))
+                                {
+                                    fullList.AddRange(list);
+                                }
+                            }
+                            _currentQueueSyncId = null;
+                            _queueSyncChunks.Clear();
+
+                            if (fullList.Count > 0)
+                            {
+                                var targetMid = cmd.TargetMid ?? _activeSong?.Mid;
+                                int newIdx = !string.IsNullOrEmpty(targetMid)
+                                    ? Math.Max(0, fullList.FindIndex(s => s.Mid == targetMid))
+                                    : 0;
+                                PlaybackQueueService.Instance.SetQueue(fullList, newIdx);
+                                BroadcastConnectQueueState();
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        AppLogger.Error("MainWindow.Connect", "SyncQueueChunkRequested error", ex);
                     }
                 });
             };
@@ -166,7 +276,7 @@ public sealed partial class MainWindow
             });
             _connectServer.NextRequested += () => Application.Invoke(async () =>
             {
-                if (RadioService.Instance.HasActiveRadio)
+                if (IsRadioModeActive)
                 {
                     await PlayNextRadioTrackAsync().ConfigureAwait(false);
                 }
@@ -306,29 +416,28 @@ public sealed partial class MainWindow
                     return _currentCoverFilePath;
                 }
 
+                var cleanMid = mid.StartsWith("pc_local_", StringComparison.OrdinalIgnoreCase)
+                    ? "local_" + mid["pc_local_".Length..]
+                    : mid;
+
                 var queueSongs = PlaybackQueueService.Instance.ActiveSongs;
-                var song = queueSongs.FirstOrDefault(s => s.Mid == mid);
+                var song = queueSongs.FirstOrDefault(s => s.Mid == mid || s.Mid == cleanMid);
 
                 if (song == null)
                 {
                     var localSongs = LocalMusicService.GetCachedSongs();
-                    song = localSongs.FirstOrDefault(s => s.Mid == mid);
+                    song = localSongs.FirstOrDefault(s => s.Mid == mid || s.Mid == cleanMid);
                 }
 
-                if (song == null && mid.StartsWith("local_", StringComparison.OrdinalIgnoreCase))
+                if (song == null && cleanMid.StartsWith("local_", StringComparison.OrdinalIgnoreCase))
                 {
-                    var hashSuffix = mid["local_".Length..];
+                    var hashSuffix = cleanMid["local_".Length..];
                     var localSongs = LocalMusicService.GetCachedSongs();
                     song = localSongs.FirstOrDefault(s => LocalMusicService.ComputeMd5(s.LocalFilePath ?? "").StartsWith(hashSuffix, StringComparison.OrdinalIgnoreCase));
                 }
 
                 if (song != null)
                 {
-                    if (song.IsLocal || !string.IsNullOrEmpty(song.LocalFilePath))
-                    {
-                        return await LocalMusicService.EnsureCoverAsync(song).ConfigureAwait(false);
-                    }
-
                     if (song.IsWebDav || !string.IsNullOrEmpty(song.WebDavHref))
                     {
                         var servers = WebDavService.GetServers();
@@ -339,30 +448,16 @@ public sealed partial class MainWindow
                             return await WebDavService.EnsureCoverAsync(server, song).ConfigureAwait(false);
                         }
                     }
+                    else if (song.IsLocal || !string.IsNullOrEmpty(song.LocalFilePath))
+                    {
+                        return await LocalMusicService.EnsureCoverAsync(song).ConfigureAwait(false);
+                    }
                 }
 
                 return null;
             };
 
-                _connectServer.CurrentLyricsTextProvider = () =>
-                {
-                    if (_currentLyrics != null && _currentLyrics.Count > 0)
-                    {
-                        var sb = new StringBuilder();
-                        foreach (var line in _currentLyrics)
-                        {
-                            var ts = line.Timestamp;
-                            var timeStr = $"[{ts.Minutes:D2}:{ts.Seconds:D2}.{ts.Milliseconds / 10:D2}]";
-                            sb.AppendLine($"{timeStr}{line.Text}");
-                            if (!string.IsNullOrWhiteSpace(line.Trans))
-                            {
-                                sb.AppendLine($"{timeStr}{line.Trans}");
-                            }
-                        }
-                        return sb.ToString();
-                    }
-                    return null;
-                };
+                _connectServer.CurrentLyricsTextProvider = () => GetOrBuildFormattedLyricsPayload();
 
                 _connectServer.Start();
                 _connectMdns = new ConnectMdnsService(_connectStorage, port: _connectServer.ActualPort);
@@ -410,22 +505,7 @@ public sealed partial class MainWindow
                     nextSong = ConnectSong.FromDomainSong(nextDomain, AudioQualityTier.SQ, actualPort);
                 }
 
-                string? lrcPayload = null;
-                if (_currentLyrics != null && _currentLyrics.Count > 0)
-                {
-                    var sb = new StringBuilder();
-                    foreach (var line in _currentLyrics)
-                    {
-                        var ts = line.Timestamp;
-                        var timeStr = $"[{ts.Minutes:D2}:{ts.Seconds:D2}.{ts.Milliseconds / 10:D2}]";
-                        sb.AppendLine($"{timeStr}{line.Text}");
-                        if (!string.IsNullOrWhiteSpace(line.Trans))
-                        {
-                            sb.AppendLine($"{timeStr}{line.Trans}");
-                        }
-                    }
-                    lrcPayload = sb.ToString();
-                }
+                string? lrcPayload = GetOrBuildFormattedLyricsPayload();
 
                 var availableTiers = new List<string> { "Standard", "HQ", "SQ", "HiRes", "Master" };
 

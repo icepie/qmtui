@@ -114,14 +114,14 @@ public sealed partial class MainWindow
 
         server.NextRequested += () => Application.Invoke(async () =>
         {
-            if (_currentViewMode == ViewMode.GuessRecommend)
+            if (IsRadioModeActive)
                 await PlayNextRadioTrackAsync();
             else
                 await PlayNextInCurrentListAsync();
         });
         server.PreviousRequested += () => Application.Invoke(async () =>
         {
-            if (_currentViewMode != ViewMode.GuessRecommend)
+            if (!IsRadioModeActive)
                 await PlayPrevInCurrentListAsync();
         });
         server.TogglePlayRequested += () => Application.Invoke(async () =>
@@ -217,7 +217,7 @@ public sealed partial class MainWindow
         {
             Application.Invoke(async () =>
             {
-                if (_currentViewMode == ViewMode.GuessRecommend)
+                if (IsRadioModeActive)
                 {
                     await PlayNextRadioTrackAsync();
                 }
@@ -450,7 +450,7 @@ public sealed partial class MainWindow
                 _webVirtualPosition = duration;
                 Application.Invoke(async () =>
                 {
-                    if (_currentViewMode == ViewMode.GuessRecommend)
+                    if (IsRadioModeActive)
                         await PlayNextRadioTrackAsync();
                     else if (_currentPlaybackMode == PlaybackMode.SingleLoop && _activeSong != null)
                         await PlaySongAsync(_activeSong, 0);

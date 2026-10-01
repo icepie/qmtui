@@ -90,7 +90,7 @@ public sealed partial class MainWindow
         bool IsStale() => ct.IsCancellationRequested || Interlocked.Read(ref _playbackSessionId) != currentSession;
 
         // 对齐官方双向反向接力：若为移动端本地曲目且 PC 本地不存在物理文件，向移动端请求 HTTP 串流代理
-        bool isLocalSong = song.IsLocal || song.Mid.StartsWith("local_", StringComparison.OrdinalIgnoreCase);
+        bool isLocalSong = !song.IsWebDav && (song.IsLocal || song.Mid.StartsWith("local_", StringComparison.OrdinalIgnoreCase));
         bool directFileExists = !string.IsNullOrEmpty(song.LocalFilePath) && File.Exists(song.LocalFilePath);
         if (isLocalSong && !directFileExists && string.IsNullOrEmpty(overridePlayUrl))
         {
@@ -109,6 +109,10 @@ public sealed partial class MainWindow
         }
 
         _activeSong = song;
+        if (!_radioService.IsCurrentSongInRadio(song))
+        {
+            _radioService.Clear();
+        }
         PlaybackQueueService.Instance.SyncCurrentSong(song);
         _songListView.SetPlayingSong(song.Mid);
 
@@ -170,6 +174,7 @@ public sealed partial class MainWindow
         MemoryManager.TrimBackground();
 
         _currentLyrics.Clear();
+        InvalidateFormattedLyricsCache();
         _currentActiveLyricIndex = -1;
         _lastRemoteSyncedSongMid = null;
 
@@ -184,7 +189,22 @@ public sealed partial class MainWindow
             }
             else
             {
-                _controlBar.UpdateQuality(AudioQualityHelper.GetBadge(_preferredQualityTier));
+                // 若该歌曲已命中预取缓存，直接对齐已解析的实际音质；否则不提前刷上偏好音质，待直链定档后一次性精准展示真实档位
+                var cacheKey = $"{song.Mid}_{(int)_preferredQualityTier}";
+                AudioQualityTier? knownTier = null;
+                lock (s_prefetchLock)
+                {
+                    if (s_prefetchedPlayUrls.TryGetValue(cacheKey, out var p) && p.ExpireAt > DateTimeOffset.UtcNow)
+                    {
+                        knownTier = p.ActualTier;
+                    }
+                }
+
+                if (knownTier.HasValue)
+                {
+                    _actualQualityTier = knownTier.Value;
+                    _controlBar.UpdateQuality(AudioQualityHelper.GetBadge(_actualQualityTier));
+                }
             }
             _lyricListView.SetSource(new ObservableCollection<string> { "正在加载歌词..." });
             try { _lyricListView.SelectedItem = 0; } catch {}
@@ -374,6 +394,7 @@ public sealed partial class MainWindow
 
         _currentLyrics.Clear();
         _currentLyrics.AddRange(lyrics);
+        InvalidateFormattedLyricsCache();
         _player.UpdateCurrentLyrics(lyrics);
         if (_standaloneWebServer != null && _standaloneWebServer.IsRunning)
         {
@@ -458,6 +479,7 @@ public sealed partial class MainWindow
                         Application.Invoke(() =>
                         {
                             _nowPlayingView.UpdateCover(cover);
+                            _miniCoverView.UpdateCover(cover);
                             BroadcastConnectPlayerState();
                         });
                     }
@@ -478,7 +500,7 @@ public sealed partial class MainWindow
             bool isLocalOrWebDav = song.IsLocal || song.IsWebDav;
             if (isLocalOrWebDav && !IsCurrentSongLyricMatched(song) && LocalLyricAutoMatcher.NeedsMatching(song, _currentLyrics))
             {
-                bool isNoLyrics = _currentLyrics.Count == 0 || (_currentLyrics.Count == 1 && _currentLyrics[0].Text == "暂无歌词");
+                bool isNoLyrics = LyricParser.IsPlaceholderLyrics(_currentLyrics);
                 _ = Task.Run(async () =>
                 {
                     if (IsStale()) return;
@@ -491,9 +513,11 @@ public sealed partial class MainWindow
                 if (IsStale()) return;
                 UpdatePlayerStatus();
                 _nowPlayingView.SetSong(song, AudioQualityHelper.GetBadge(_actualQualityTier));
+                _miniCoverView.SetSong(song, AudioQualityHelper.GetBadge(_actualQualityTier));
                 if (!string.IsNullOrEmpty(_currentCoverFilePath))
                 {
                     _nowPlayingView.UpdateCover(_currentCoverFilePath);
+                    _miniCoverView.UpdateCover(_currentCoverFilePath);
                 }
                 _nowPlayingView.SetLyrics(_currentLyrics, _showTranslation);
                 _nowPlayingView.SetLyricMatchedState(IsCurrentSongLyricMatched(song));
@@ -527,7 +551,7 @@ public sealed partial class MainWindow
                     if (IsStale()) return;
                     if (_activeSong?.Mid == song.Mid)
                     {
-                        if (_currentViewMode == ViewMode.GuessRecommend)
+                        if (IsRadioModeActive)
                         {
                             await PlayNextRadioTrackAsync();
                         }
@@ -898,7 +922,7 @@ public sealed partial class MainWindow
             await Task.Delay(2500).ConfigureAwait(false);
 
             Song? nextSong = null;
-            if (_currentViewMode == ViewMode.GuessRecommend)
+            if (IsRadioModeActive)
             {
                 nextSong = _radioService.PeekNextRadioTrack();
             }

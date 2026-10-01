@@ -338,34 +338,53 @@ public sealed partial class MainWindow
             return;
         }
 
-        bool isFav = IsSongFavorite(song);
-
-        if (isFav)
+        string songKey = !string.IsNullOrEmpty(song.Mid) ? song.Mid : song.Id.ToString();
+        lock (_favoritePendingSongKeys)
         {
-            _controlBar.UpdateStatus($"[正在取消收藏] 正在将《{song.Title}》从我的喜欢中移除...");
-            var ok = await MusicApi.RemoveSongFromFavoriteAsync(song);
-            if (ok)
+            if (!_favoritePendingSongKeys.Add(songKey))
             {
-                ApplySongFavoriteState(song, false);
-                _controlBar.UpdateStatus($"[取消收藏成功] 已将《{song.Title}》从我的喜欢中移除");
-            }
-            else
-            {
-                _controlBar.UpdateStatus($"[操作失败] 从我的喜欢移除《{song.Title}》失败");
+                return;
             }
         }
-        else
+
+        try
         {
-            _controlBar.UpdateStatus($"[正在收藏] 正在将《{song.Title}》添加至我的喜欢...");
-            var ok = await MusicApi.AddSongToFavoriteAsync(song);
-            if (ok)
+            bool isFav = IsSongFavorite(song);
+
+            if (isFav)
             {
-                ApplySongFavoriteState(song, true);
-                _controlBar.UpdateStatus($"[收藏成功] 已将《{song.Title}》添加至我的喜欢");
+                _controlBar.UpdateStatus($"[正在取消收藏] 正在将《{song.Title}》从我的喜欢中移除...");
+                var ok = await MusicApi.RemoveSongFromFavoriteAsync(song);
+                if (ok)
+                {
+                    ApplySongFavoriteState(song, false);
+                    _controlBar.UpdateStatus($"[取消收藏成功] 已将《{song.Title}》从我的喜欢中移除");
+                }
+                else
+                {
+                    _controlBar.UpdateStatus($"[操作失败] 从我的喜欢移除《{song.Title}》失败");
+                }
             }
             else
             {
-                _controlBar.UpdateStatus($"[操作失败] 添加《{song.Title}》至我的喜欢失败");
+                _controlBar.UpdateStatus($"[正在收藏] 正在将《{song.Title}》添加至我的喜欢...");
+                var ok = await MusicApi.AddSongToFavoriteAsync(song);
+                if (ok)
+                {
+                    ApplySongFavoriteState(song, true);
+                    _controlBar.UpdateStatus($"[收藏成功] 已将《{song.Title}》添加至我的喜欢");
+                }
+                else
+                {
+                    _controlBar.UpdateStatus($"[操作失败] 添加《{song.Title}》至我的喜欢失败");
+                }
+            }
+        }
+        finally
+        {
+            lock (_favoritePendingSongKeys)
+            {
+                _favoritePendingSongKeys.Remove(songKey);
             }
         }
     }
@@ -892,7 +911,7 @@ public sealed partial class MainWindow
     private async Task LoadLocalMusicAsync()
     {
         _currentViewMode = ViewMode.LocalMusic;
-        UpdateSearchCategoryVisibility(false);
+        UpdateTopContextButtons();
         _hasMoreSearchResults = false;
         _isViewingPlaylistsList = false;
         _currentDrilldownPlaylist = null;
@@ -904,7 +923,7 @@ public sealed partial class MainWindow
         {
             Application.Invoke(() =>
             {
-                _songListView.SetMessage("本地音乐库为空 (请按 A 键添加本地音乐文件夹进行扫描，按 F 管理目录)", "本地音乐: 0 首");
+                _songListView.SetMessage("本地音乐库为空 (请使用顶部 [A添加目录] 扫描，或 [F管理目录])", "本地音乐: 0 首");
                 _controlBar.UpdateStatus("[本地音乐] 未配置扫描目录，请按 A 键添加本地音乐目录");
             });
             return;
@@ -915,7 +934,7 @@ public sealed partial class MainWindow
         {
             Application.Invoke(() =>
             {
-                var title = $"本地音乐: 共 {cachedSongs.Count} 首 (按 A 添加目录，按 R 重新扫描，按 F 管理目录)";
+                var title = $"本地音乐: 共 {cachedSongs.Count} 首";
                 _songListView.SetSongs(cachedSongs, title);
                 if (_activeSong != null)
                 {
@@ -979,7 +998,7 @@ public sealed partial class MainWindow
                     return;
                 }
 
-                var title = $"本地音乐: 共 {songs.Count} 首 (按 A 添加目录，按 R 重新扫描，按 F 管理目录)";
+                var title = $"本地音乐: 共 {songs.Count} 首";
                 _songListView.SetSongs(songs, title);
                 if (_activeSong != null)
                 {
@@ -1023,12 +1042,12 @@ public sealed partial class MainWindow
                 {
                     if (cached.Count == 0)
                     {
-                        _songListView.SetMessage("本地音乐库为空 (请按 A 键添加本地音乐文件夹进行扫描，按 F 管理目录)", "本地音乐: 0 首");
+                        _songListView.SetMessage("本地音乐库为空 (请使用顶部 [A添加目录] 扫描，或 [F管理目录])", "本地音乐: 0 首");
                     }
                     else
                     {
                         var folders = QmTui.Services.LocalMusicService.GetFolders();
-                        var title = $"本地音乐: 共 {cached.Count} 首 (按 A 添加目录，按 R 重新扫描，按 F 管理目录)";
+                        var title = $"本地音乐: 共 {cached.Count} 首";
                         _songListView.SetSongs(cached, title);
                     }
                 }
