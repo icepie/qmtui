@@ -28,6 +28,7 @@ public static partial class Program
             Console.WriteLine("  -d, --debug          Enable verbose debug logging");
             Console.WriteLine("  -r, --recognize <f>  Recognize song from audio file");
             Console.WriteLine("  --web                Start Web remote-control server (CLI owns audio output)");
+            Console.WriteLine("  --connect            Enable Melodist Connect (mDNS discovery + 8765 WS); default: off in --web mode");
             Console.WriteLine("  -p, --web-port <p>   Specify Web remote-control port (default: 9999)");
             Console.WriteLine("  --no-audio           Disable local GStreamer playback");
             Console.WriteLine("  --no-notify          Disable desktop song switch notifications");
@@ -127,6 +128,10 @@ public static partial class Program
         }
 
         bool useWebMode = args.Contains("--web") || Environment.GetEnvironmentVariable("QQMUSIC_WEB") == "1";
+        // Melodist Connect（mDNS 发现 + 8765 WebSocket 手机遥控）：TUI 默认开，--web（无头服务器）默认关。
+        // 显式开启：--connect 或 QQMUSIC_CONNECT=1
+        bool useConnect = args.Contains("--connect") || Environment.GetEnvironmentVariable("QQMUSIC_CONNECT") == "1";
+        bool connectEnabled = useConnect || !useWebMode;
         int webPort = 9999;
         for (int i = 0; i < args.Length; i++)
         {
@@ -195,7 +200,7 @@ public static partial class Program
 
                 MikuTheme.Apply();
 
-                var mainWindow = new MainWindow(player, useWebMode, webPort);
+                var mainWindow = new MainWindow(player, useWebMode, webPort, connectEnabled);
 
                 try
                 {

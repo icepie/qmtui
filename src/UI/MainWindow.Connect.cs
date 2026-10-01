@@ -21,6 +21,18 @@ public sealed partial class MainWindow
 
     private void SetupConnectService()
     {
+        // --web（无头服务器）默认不启动 Melodist Connect：那台机器上没人用手机发现，
+        // 而 mDNS 广播曾因自激风暴打爆整个 LAN（上游 7e27c2a 修的正是这个）。
+        // 需要时：启动加 --connect，或设 QQMUSIC_CONNECT=1
+        if (!_connectEnabled)
+        {
+            AppLogger.Info("MainWindow.Connect",
+                "Melodist Connect 已禁用（--web 模式默认关闭；需要时加 --connect 或设 QQMUSIC_CONNECT=1）");
+            return;
+        }
+
+        if (_connectServer != null) return;
+
         try
         {
             _connectStorage = new ConnectStorage();
@@ -602,7 +614,14 @@ public sealed partial class MainWindow
             SetupConnectService();
         }
 
-        var dlg = new ConnectDialog(_connectServer!, _connectStorage!, _connectMdns);
+        if (_connectServer == null || _connectStorage == null)
+        {
+            // Connect 被禁用（例如 --web 且未加 --connect），不要强开
+            AppLogger.Warn("MainWindow.Connect", "Melodist Connect 不可用（已禁用），跳过配对对话框");
+            return;
+        }
+
+        var dlg = new ConnectDialog(_connectServer, _connectStorage, _connectMdns);
         _activeModalDialog = dlg;
         Application.Run(dlg);
         _activeModalDialog = null;

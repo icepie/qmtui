@@ -22,6 +22,7 @@ public sealed partial class MainWindow : Window
 {
     private readonly IPlayer _player;
     private readonly bool _isWebMode;
+    private readonly bool _connectEnabled;
     private long _lastUserActivityTick = Environment.TickCount64;
     private object? _aodInactivityTimerToken;
     private readonly SystemMediaSessionService _mprisService;
@@ -213,10 +214,11 @@ public sealed partial class MainWindow : Window
     private long _lastProgressSaveTick;
 
 
-    public MainWindow(IPlayer player, bool isWebMode = false, int webServerPort = 9999)
+    public MainWindow(IPlayer player, bool isWebMode = false, int webServerPort = 9999, bool connectEnabled = true)
     {
         _player = player;
         _isWebMode = isWebMode;
+        _connectEnabled = connectEnabled;
         _webServerPort = webServerPort;
         if (_player is WebPlayer webPlayer)
         {
