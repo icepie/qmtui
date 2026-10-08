@@ -14,7 +14,7 @@ namespace QmTui.UI;
 /// 中央歌曲列表视窗：
 /// 1. 宽窗口等比自适应列宽（歌名~48%、歌手~22%、专辑~30%），消除右侧留白；
 /// 2. 无“提示:”前缀纯净展示；
-/// 3. 超长曲目信息丝滑跑马灯（Marquee）循环平滑滚动；
+/// 3. 超长曲目信息跑马灯（Marquee）循环滚动；
 /// 4. 鼠标悬浮与无限向下滚动加载。
 /// </summary>
 public enum SongSubColumn
@@ -125,9 +125,19 @@ public sealed partial class SongListView : FrameView
 
     private readonly ObservableCollection<string> _displayRows = [];
 
+    public new string Title
+    {
+        get => _currentFullTitle;
+        set
+        {
+            base.Title = "";
+            SetMarqueeTitle(value ?? "");
+        }
+    }
+
     public SongListView()
     {
-        Title = "";
+        base.Title = "";
         Width = Dim.Percent(58);
         Height = Dim.Fill(5);
         CanFocus = true;

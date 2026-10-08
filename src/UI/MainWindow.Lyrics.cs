@@ -69,7 +69,7 @@ public sealed partial class MainWindow
         int viewH = _lyricListView.Viewport.Height > 0 ? _lyricListView.Viewport.Height : 15;
         int padLines = Math.Max(2, (viewH / 2) - 1);
 
-        // 1. 顶部预留视口半高空行留白，确保第一句歌词也能从容滚动至屏幕正中央
+        // 1. 顶部预留视口半高空行留白，使第一句歌词可滚动至屏幕正中央
         for (int p = 0; p < padLines; p++)
         {
             displayLines.Add("");
@@ -81,7 +81,7 @@ public sealed partial class MainWindow
             var l = _currentLyrics[i];
             _lyricLineToFirstItemIndex[i] = displayLines.Count;
 
-            // 2. 原文行（水平对称居中，智能断行对齐）
+            // 2. 原文行（水平居中，按宽度自动断行）
             var origWrapped = WrapLyricText(l.Text, usableWidth);
             foreach (var oLine in origWrapped)
             {
@@ -89,7 +89,7 @@ public sealed partial class MainWindow
                 _lyricItemToLineIndex.Add(i);
             }
 
-            // 3. 翻译行（若启用且非空，紧贴原文下方，同样水平对称居中与智能断行）
+            // 3. 翻译行（若启用且非空，紧贴原文下方，水平居中与自动断行）
             if (showTrans && !string.IsNullOrWhiteSpace(l.Trans))
             {
                 var transWrapped = WrapLyricText(l.Trans, usableWidth);
@@ -100,12 +100,12 @@ public sealed partial class MainWindow
                 }
             }
 
-            // 4. 句落之间插入单个空行，恢复自然舒适的一行呼吸间隔
+            // 4. 句落之间插入单个空行作为间隔
             displayLines.Add("");
             _lyricItemToLineIndex.Add(-1);
         }
 
-        // 5. 底部预留视口半高空行留白，确保最后一句歌词也能从容滚动至屏幕正中央
+        // 5. 底部预留视口半高空行留白，使最后一句歌词可滚动至屏幕正中央
         for (int p = 0; p < padLines; p++)
         {
             displayLines.Add("");
@@ -127,7 +127,7 @@ public sealed partial class MainWindow
                     _lyricListView.Viewport.Height
                 );
             }
-            catch {}
+            catch { }
         }
         _lyricScrollBar?.UpdateMetrics(displayLines.Count, _lyricListView.Viewport.Height, _lyricListView.Viewport.Y);
     }
@@ -323,9 +323,9 @@ public sealed partial class MainWindow
                             }
                         }
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        // 忽略切歌过渡期的瞬态索引竞争
+                        AppLogger.Debug("MainWindow.Lyrics", $"Transient lyric scroll race ignored: {ex.Message}");
                     }
                 }
                 _lyricScrollBar?.UpdateMetrics(sourceCount, _lyricListView.Viewport.Height, _lyricListView.Viewport.Y);
@@ -373,7 +373,10 @@ public sealed partial class MainWindow
                         }
                         _lyricScrollBar?.UpdateMetrics(sourceCount, _lyricListView.Viewport.Height, _lyricListView.Viewport.Y);
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        AppLogger.Debug("MainWindow.Lyrics", $"Transient scroll lyric line race ignored: {ex.Message}");
+                    }
                 }
             }
         }
@@ -569,7 +572,7 @@ public sealed partial class MainWindow
     }
 
     /// <summary>
-    /// [Feat-03] 本地与 WebDAV 在线歌词智能匹配与升级（Y 键/大界面按钮触发，支持可逆撤销恢复）
+    /// [Feat-03] 本地与 WebDAV 在线歌词匹配与恢复（Y 键/大界面按钮触发，支持撤销恢复）
     /// </summary>
     private async Task MatchOrRestoreLyricAsync()
     {
@@ -711,5 +714,67 @@ public sealed partial class MainWindow
             AppLogger.Warn("MainWindow.Playback", $"Match lyric failed: {ex.Message}");
             _controlBar?.UpdateStatus($"[歌词] 声学匹配异常: {ex.Message}");
         }
+    }
+
+    private void ToggleCommentView()
+    {
+        if (_artistAlbumDetailView.Visible)
+        {
+            _artistAlbumDetailView.OnDeactivated();
+            _artistAlbumDetailView.Visible = false;
+            TerminalImageHelper.DeleteKittyImage(TerminalImageHelper.ImageIdArtistDetail);
+        }
+
+        _isCommentViewActive = !_isCommentViewActive;
+        if (_isCommentViewActive)
+        {
+            _lyricListView.Visible = false;
+            _lyricScrollBar.Visible = false;
+            _lyricTransBtn.Visible = false;
+            _lyricImmersiveBtn.Visible = false;
+            _lyricMatchBtn.Visible = false;
+
+            _songCommentView.Visible = true;
+            _songCommentView.SetSong(_activeSong);
+            _songCommentView.OnActivated();
+
+            UpdateCommentTitle();
+        }
+        else
+        {
+            _songCommentView.OnDeactivated();
+            _songCommentView.Visible = false;
+
+            _lyricListView.Visible = true;
+            _lyricScrollBar.Visible = true;
+            UpdateTranslationButtonHighlight();
+            UpdateLyricMatchButtonHighlight();
+            _lyricImmersiveBtn.Visible = true;
+
+            _lyricTitleLabel.Text = " 歌词 ";
+            _hotkeyHintLabel.Text = " [V]播放界面  [B]通知  [M]静音  [- / +]音量  [/]搜索  [E]队列  [G]查找  [C]评论";
+            _songListView.SetFocusToList();
+        }
+
+        UpdateFrameBorderHighlights();
+        SetNeedsDraw();
+        _nowPlayingView?.SetCommentViewActive(_isCommentViewActive);
+    }
+
+    private void UpdateCommentTitle()
+    {
+        if (!_isCommentViewActive) return;
+
+        int count = _songCommentView.TotalCommentCount;
+        _lyricTitleLabel.Text = count > 0
+            ? $" 评论 ({SongCommentView.FormatCount(count)}) "
+            : " 评论 ";
+        _lyricFrame.SetNeedsDraw();
+    }
+
+    private void SetCommentViewState(bool active)
+    {
+        if (_isCommentViewActive == active) return;
+        ToggleCommentView();
     }
 }

@@ -128,6 +128,32 @@ public static partial class TerminalImageHelper
         return null;
     }
 
+    /// <summary>
+    /// 获取本地图像的像素宽高（解析头信息，开销极小）
+    /// </summary>
+    public static (int width, int height)? GetImageDimensions(string? filePath)
+    {
+        if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return null;
+        try
+        {
+            byte[] fileBytes = File.ReadAllBytes(filePath);
+            if (IsValidWebpFile(filePath))
+            {
+                var webpDecoded = WebPNative.DecodeRgba(fileBytes, out int w, out int h);
+                if (webpDecoded != null) return (w, h);
+            }
+
+            using var ms = new MemoryStream(fileBytes);
+            var info = StbImageSharp.ImageInfo.FromStream(ms);
+            if (info != null && info.Value.Width > 0 && info.Value.Height > 0)
+            {
+                return (info.Value.Width, info.Value.Height);
+            }
+        }
+        catch { }
+        return null;
+    }
+
     private static async Task<string?> ApplyRoundedCornersAsync(string sourceFile, string targetPng, CancellationToken cancellationToken = default)
     {
         if (!File.Exists(sourceFile) || new FileInfo(sourceFile).Length == 0 || cancellationToken.IsCancellationRequested) return null;
@@ -151,7 +177,7 @@ public static partial class TerminalImageHelper
             byte[] pixelData = decoded.Value.pixelData;
 
             // 若图像尺寸超过 1200 像素（如单曲原画母图），使用双线性插值算法等比缩放至 1200 像素内；
-            // 官方 1200x1200 专辑封面直接保留原生分辨率，消除额外重采样开销并保证 2K/4K 屏幕清晰呈现
+            // 官方 1200x1200 专辑封面直接保留原生分辨率，消除额外重采样开销并适应高分辨率屏幕
             if (width > MaxCoverDimension || height > MaxCoverDimension)
             {
                 float scale = Math.Min((float)MaxCoverDimension / width, (float)MaxCoverDimension / height);
@@ -163,7 +189,7 @@ public static partial class TerminalImageHelper
             }
             cancellationToken.ThrowIfCancellationRequested();
 
-            // 施加平滑抗锯齿微圆角裁切（保底 7px 微圆角）
+            // 施加抗锯齿微圆角裁切（保底 7px 微圆角）
             ApplyAntialiasedRoundedCorners(pixelData, width, height);
 
             await using (var outStream = File.Create(tmpPng))
@@ -195,7 +221,7 @@ public static partial class TerminalImageHelper
         }
         finally
         {
-            try { if (File.Exists(tmpPng)) File.Delete(tmpPng); } catch {}
+            try { if (File.Exists(tmpPng)) File.Delete(tmpPng); } catch { }
             MemoryManager.ScheduleTrim(1500);
         }
 
@@ -252,7 +278,7 @@ public static partial class TerminalImageHelper
     }
 
     /// <summary>
-    /// 对 4 通道 RGBA 像素执行多级金字塔 2x2 面积平均抗锯齿降采样，彻底消灭欠采样高频混叠与线稿断线锯齿
+    /// 对 4 通道 RGBA 像素执行多级金字塔 2x2 面积平均抗锯齿降采样，降低欠采样高频混叠与锯齿
     /// </summary>
     private static (int width, int height, byte[] pixelData) DownsamplePyramidAreaAverage(byte[] src, int srcW, int srcH, int targetMaxDimension)
     {
@@ -311,7 +337,7 @@ public static partial class TerminalImageHelper
                 isRented = true;
             }
 
-            // 第二阶段：若尺寸仍大于目标，采用双线性插值精确平滑微调至目标尺寸
+            // 第二阶段：若尺寸仍大于目标，采用双线性插值缩放至目标尺寸
             if (curW > targetMaxDimension || curH > targetMaxDimension)
             {
                 float scale = Math.Min((float)targetMaxDimension / curW, (float)targetMaxDimension / curH);
@@ -349,6 +375,23 @@ public static partial class TerminalImageHelper
     public const uint ImageIdMiniCover = 1;
     public const uint ImageIdNowPlaying = 2;
     public const uint ImageIdArtistDetail = 3;
+    public const uint ImageIdCommentPreview = 4;
+    public const uint ImageIdAcrCover = 5;
+    public const uint ImageIdCommentBase = 100;
+    public const int MaxConcurrentCommentImages = 4;
+
+    /// <summary>
+    /// 清除终端中所有已渲染的评论配图 Kitty 图像
+    /// </summary>
+    public static void ClearCommentImages()
+    {
+        if (!IsImageSupported) return;
+        DeleteKittyImage(ImageIdCommentPreview);
+        for (uint i = 0; i < MaxConcurrentCommentImages; i++)
+        {
+            DeleteKittyImage(ImageIdCommentBase + i);
+        }
+    }
 
     private readonly record struct ImageCacheKey(string FilePath, int Cols, int Rows, long LastWriteTicks, uint ImageId = 0);
 
@@ -364,7 +407,7 @@ public static partial class TerminalImageHelper
     /// <param name="col">屏幕 1-based 列坐标</param>
     /// <param name="row">屏幕 1-based 行坐标</param>
     /// <param name="cols">占据列宽（若 rows 为 0，终端将按原图物理宽高比自适应行数）</param>
-    /// <param name="rows">占据行高（若为 0，则基于 cols 严格保持 1:1 原画比例，杜绝拉伸变形）</param>
+    /// <param name="rows">占据行高（若为 0，则基于 cols 保持 1:1 原画比例，避免拉伸）</param>
     /// <param name="imageId">可选 Kitty 图像 ID（0 为未指定，将触发全局清屏；>0 为精准 ID 覆盖）</param>
     public static void RenderKittyImage(string filePath, int col, int row, int cols, int rows, uint imageId = 0)
     {
@@ -392,7 +435,7 @@ public static partial class TerminalImageHelper
             {
                 byte[] fileBytes = File.ReadAllBytes(filePath);
 
-                // 根据目标网格尺寸计算超采样物理像素目标（消除混叠锯齿，保留细腻视网膜质感）
+                // 根据目标网格尺寸计算超采样物理像素目标（减少高频混叠与锯齿）
                 int targetPixelDim = cols > 0 ? Math.Clamp(cols * 24, 200, 720) : (rows > 0 ? Math.Clamp(rows * 48, 200, 720) : 600);
                 var decoded = DecodeImageRgba(fileBytes, IsValidWebpFile(filePath));
                 if (decoded != null)
@@ -410,7 +453,7 @@ public static partial class TerminalImageHelper
                         currentPixels = smoothPixels;
                     }
 
-                    // 施加平滑抗锯齿微圆角裁切（保底 7px 微圆角，与图二质感完全一致）
+                    // 施加抗锯齿微圆角裁切（保底 7px 微圆角）
                     ApplyAntialiasedRoundedCorners(currentPixels, currentW, currentH);
 
                     using var downsampledMs = new MemoryStream();
@@ -566,7 +609,7 @@ public static partial class TerminalImageHelper
     }
 
     /// <summary>
-    /// 对 32 位 RGBA 像素执行无黑边抗锯齿微圆角裁切（四角平滑 Alpha 渐变，零额外大内存分配）
+    /// 对 32 位 RGBA 像素执行抗锯齿微圆角裁切（四角 Alpha 渐变，就地修改像素缓冲区）
     /// </summary>
     internal static void ApplyAntialiasedRoundedCorners(byte[] rgba, int width, int height, float? customRadius = null)
     {

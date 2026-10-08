@@ -36,6 +36,8 @@ public sealed partial class MainWindow : Window
     private readonly ListView _lyricListView;
     private readonly ThinScrollBarView _lyricScrollBar;
     private readonly ArtistAlbumDetailView _artistAlbumDetailView;
+    private readonly SongCommentView _songCommentView;
+    private bool _isCommentViewActive;
     private readonly PlayerControlBar _controlBar;
     private readonly Label _hotkeyHintLabel;
     private readonly Label _sidebarTitleLabel;
@@ -589,7 +591,7 @@ public sealed partial class MainWindow : Window
         };
         Add(_songListView);
 
-        // 3.5. 主列表即时查找悬浮窗 (G 键触发) - 置于中央歌曲列表视窗内靠上居中，彻底消除与右侧分割线重叠
+        // 3.5. 主列表即时查找悬浮窗 (G 键触发) - 置于中央歌曲列表视窗内靠上居中，避免与右侧分割线重叠
         _quickSearchBar = new QuickSearchFloatingBar
         {
             X = Pos.Center(),
@@ -611,6 +613,7 @@ public sealed partial class MainWindow : Window
                 _sidebarClickInEmptyArea = false;
                 return;
             }
+            CancelFavoriteSync();
             ClearNavigationStack();
             var idx = _sidebarList.SelectedItem ?? 0;
             if (idx == 0)
@@ -944,6 +947,29 @@ public sealed partial class MainWindow : Window
         _artistAlbumDetailView.TabNavigationRequested += forward => SwitchNextFocusWindow(forward);
         _lyricFrame.Add(_artistAlbumDetailView);
 
+        _songCommentView = new SongCommentView
+        {
+            X = 0,
+            Y = 0,
+            Width = Dim.Fill(),
+            Height = Dim.Fill(),
+            Visible = false,
+            CanFocus = true
+        };
+        _songCommentView.CloseRequested += () => ToggleCommentView();
+        _songCommentView.TabNavigationRequested += forward => SwitchNextFocusWindow(forward);
+        _songCommentView.TotalCommentCountChanged += count =>
+        {
+            Application.Invoke(() =>
+            {
+                if (_isCommentViewActive)
+                {
+                    UpdateCommentTitle();
+                }
+            });
+        };
+        _lyricFrame.Add(_songCommentView);
+
         Add(_lyricFrame);
 
         _controlBar = new PlayerControlBar();
@@ -1028,7 +1054,7 @@ public sealed partial class MainWindow : Window
         // 底部快捷键操作指南（独立放置在控制栏UI方框下方最底行，干净平整无边框干扰）
         _hotkeyHintLabel = new Label
         {
-            Text = " [V]播放界面  [B]通知  [M]静音  [- / +]音量  [/]搜索  [E]队列  [G]查找",
+            Text = " [V]播放界面  [B]通知  [M]静音  [- / +]音量  [/]搜索  [E]队列  [G]查找  [C]评论",
             X = 0,
             Y = Pos.AnchorEnd(1),
             Width = Dim.Fill(),
@@ -1040,6 +1066,17 @@ public sealed partial class MainWindow : Window
         {
             Normal = new Terminal.Gui.Drawing.Attribute(MikuTheme.MikuTextSub, MikuTheme.MikuBgSurface)
         });
+        _hotkeyHintLabel.MouseEvent += (s, m) =>
+        {
+            if (m.Flags.HasFlag(MouseFlags.LeftButtonClicked))
+            {
+                if (m.Position.HasValue && m.Position.Value.X >= 55)
+                {
+                    ToggleCommentView();
+                    m.Handled = true;
+                }
+            }
+        };
         Add(_hotkeyHintLabel);
 
         // 顶部三大窗格置顶常驻高亮标题（即使未获焦暗化边框线条，标题文本始终保持翡翠薄荷绿高亮）
@@ -1100,7 +1137,7 @@ public sealed partial class MainWindow : Window
         {
             if (m.Flags.HasFlag(MouseFlags.LeftButtonClicked) || m.Flags.HasFlag(MouseFlags.LeftButtonPressed))
             {
-                SetFocusToWindow(2);
+                ToggleCommentView();
                 m.Handled = true;
             }
         };
@@ -1138,6 +1175,13 @@ public sealed partial class MainWindow : Window
         _nowPlayingView.MatchLyricRequested += async () => await MatchOrRestoreLyricAsync();
         _nowPlayingView.LoginRequested += ShowLoginDialog;
         _nowPlayingView.AddToPlaylistRequested += () => _ = HandleAddToPlaylistAsync();
+        _nowPlayingView.CommentViewToggled += active =>
+        {
+            if (_isCommentViewActive != active)
+            {
+                SetCommentViewState(active);
+            }
+        };
         Add(_nowPlayingView);
         _aodView = new AodView
         {
@@ -1222,7 +1266,7 @@ public sealed partial class MainWindow : Window
             {
                 if (IsRadioModeActive)
                 {
-                    // 电台模式：单曲播放结束后自动平滑跳至下一首
+                    // 电台模式：单曲播放结束后自动切换至下一首
                     await PlayNextRadioTrackAsync();
                     return;
                 }
@@ -1241,7 +1285,7 @@ public sealed partial class MainWindow : Window
             });
         };
 
-        // 递归解除全部子控件对 Space 和 Tab 的默认拦截（TextField 除外），确保全局快捷键与视窗循环流转顺畅
+        // 递归解除全部子控件对 Space 和 Tab 的默认拦截（TextField 除外），使全局快捷键与视窗可响应 Space 和 Tab
         UnbindSpaceKey(this);
         UnbindTabKeys(this);
 
@@ -1580,7 +1624,7 @@ public sealed partial class MainWindow : Window
                     _standaloneWebServer = null;
                 }
             }
-            catch {}
+            catch { }
 
             try
             {
@@ -1596,12 +1640,12 @@ public sealed partial class MainWindow : Window
                     _connectServer = null;
                 }
             }
-            catch {}
+            catch { }
 
-            try { _mprisService.Dispose(); } catch {}
-            try { _player.Dispose(); } catch {}
-            try { UserSession.Current.Save(); } catch {}
-            try { PlaybackQueueService.Instance.SaveQueue(); } catch {}
+            try { _mprisService.Dispose(); } catch { }
+            try { _player.Dispose(); } catch { }
+            try { UserSession.Current.Save(); } catch { }
+            try { PlaybackQueueService.Instance.SaveQueue(); } catch { }
         }
         base.Dispose(disposing);
     }
@@ -1917,44 +1961,6 @@ public sealed partial class MainWindow : Window
             _controlBar.UpdateStatus($"[桌面通知] 切歌气泡已{stateStr} (按 B 切换)");
         }
         AppLogger.Info("MainWindow", $"Desktop song switch notification toggled: {stateStr}");
-    }
-
-    private async Task HandleExportSongAsync()
-    {
-        Song? targetSong = null;
-        if (_songListView.Songs.Count > 0 && _songListView.SelectedItem is { } idx && idx >= 0 && idx < _songListView.Songs.Count)
-        {
-            targetSong = _songListView.Songs[idx];
-        }
-        else
-        {
-            targetSong = _activeSong ?? _controlBar.CurrentSong;
-        }
-
-        if (targetSong == null)
-        {
-            _controlBar.UpdateStatus("[导出] 请先在列表中选中歌曲或起播一首歌曲");
-            return;
-        }
-
-        _controlBar.UpdateStatus($"[导出中] 正在导出: {targetSong.Title}...");
-        var quality = _actualQualityTier;
-
-        _ = Task.Run(async () =>
-        {
-            var res = await AudioExportService.ExportSongAsync(targetSong, quality).ConfigureAwait(false);
-            Application.Invoke(() =>
-            {
-                if (res.Success)
-                {
-                    _controlBar.UpdateStatus($"[导出成功] 已保存至: {Path.GetFileName(res.FilePath)} (按 X 再次导出)");
-                }
-                else
-                {
-                    _controlBar.UpdateStatus($"[导出失败] {res.Message}");
-                }
-            });
-        });
     }
 
     #endregion

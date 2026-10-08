@@ -28,14 +28,96 @@ public sealed partial class NowPlayingView
         TriggerImmersiveActivity();
         TriggerInteractiveActivity();
 
+        var currentFocused = Application.Navigation?.GetFocused();
+        AppLogger.Force("NowPlayingView", $"HandleTabNavigation: forward={forward}, isImmersive={_isImmersiveMode}, isImageSupported={TerminalImageHelper.IsImageSupported}, isCommentViewActive={_isCommentViewActive}, commentHasActiveFocus={_commentView.HasActiveFocus}, focusedView={currentFocused?.GetType().Name ?? "null"}");
+
         if (_isImmersiveMode || !TerminalImageHelper.IsImageSupported)
         {
-            // 沉浸模式或无图全宽歌词模式下（封面容器已隐藏）：直接流转至底部控制栏
+            if (_isCommentViewActive)
+            {
+                if (_commentView.HasActiveFocus)
+                {
+                    AppLogger.Force("NowPlayingView", "HandleTabNavigation: in no-image/immersive mode, switching focus from CommentView to ControlBar");
+                    FocusControlBarRequested?.Invoke();
+                }
+                else
+                {
+                    bool res = _commentView.SetFocus();
+                    AppLogger.Force("NowPlayingView", $"HandleTabNavigation: in no-image/immersive mode, switching focus to CommentView, result={res}");
+                }
+                FocusChangedNotification?.Invoke();
+                return;
+            }
             FocusControlBarRequested?.Invoke();
             return;
         }
 
-        // 普通模式（有底栏）：在交互项目与底部控制台之间轮转
+        // 评论区激活时：在 [评论区] <-> [歌手] <-> [专辑] <-> [底栏] 之间四元轮转
+        if (_isCommentViewActive)
+        {
+            if (_commentView.HasActiveFocus)
+            {
+                if (forward)
+                {
+                    bool res = _artistLink.SetFocus();
+                    AppLogger.Force("NowPlayingView", $"HandleTabNavigation: CommentView -> ArtistLink, result={res}");
+                }
+                else
+                {
+                    AppLogger.Force("NowPlayingView", "HandleTabNavigation: CommentView -> ControlBar");
+                    FocusControlBarRequested?.Invoke();
+                }
+                FocusChangedNotification?.Invoke();
+            }
+            else if (_artistLink.HasFocus)
+            {
+                if (forward)
+                {
+                    bool res = _albumLink.SetFocus();
+                    AppLogger.Force("NowPlayingView", $"HandleTabNavigation: ArtistLink -> AlbumLink, result={res}");
+                    FocusChangedNotification?.Invoke();
+                }
+                else
+                {
+                    bool res = _commentView.SetFocus();
+                    AppLogger.Force("NowPlayingView", $"HandleTabNavigation: ArtistLink -> CommentView, result={res}");
+                    FocusChangedNotification?.Invoke();
+                }
+            }
+            else if (_albumLink.HasFocus)
+            {
+                if (forward)
+                {
+                    AppLogger.Force("NowPlayingView", "HandleTabNavigation: AlbumLink -> ControlBar");
+                    FocusControlBarRequested?.Invoke();
+                }
+                else
+                {
+                    bool res = _artistLink.SetFocus();
+                    AppLogger.Force("NowPlayingView", $"HandleTabNavigation: AlbumLink -> ArtistLink, result={res}");
+                    FocusChangedNotification?.Invoke();
+                }
+            }
+            else
+            {
+                // 当前焦点在底栏或外部刚切入
+                if (forward)
+                {
+                    bool res = _commentView.SetFocus();
+                    AppLogger.Force("NowPlayingView", $"HandleTabNavigation: External/ControlBar -> CommentView, result={res}");
+                    FocusChangedNotification?.Invoke();
+                }
+                else
+                {
+                    bool res = _albumLink.SetFocus();
+                    AppLogger.Force("NowPlayingView", $"HandleTabNavigation: External/ControlBar -> AlbumLink, result={res}");
+                    FocusChangedNotification?.Invoke();
+                }
+            }
+            return;
+        }
+
+        // 普通歌词模式（有底栏）：在交互项目与底部控制台之间轮转
         if (_artistLink.HasFocus)
         {
             if (forward)
@@ -86,7 +168,7 @@ public sealed partial class NowPlayingView
                 _coverCts?.Cancel();
                 _coverCts?.Dispose();
             }
-            catch {}
+            catch { }
             _coverCts = null;
             _coverFilePath = null;
             _artistLink.SetText("");
@@ -105,6 +187,7 @@ public sealed partial class NowPlayingView
         _songTitleLabel.Text = song.Title ?? "未知曲目";
         _albumLink.SetText(string.IsNullOrWhiteSpace(song.Album) ? "未知专辑" : song.Album);
         _songInfoContainer.Visible = true;
+        _commentView.SetSong(song);
 
         if (songChanged)
         {
@@ -113,7 +196,7 @@ public sealed partial class NowPlayingView
                 _coverCts?.Cancel();
                 _coverCts?.Dispose();
             }
-            catch {}
+            catch { }
             _coverCts = new CancellationTokenSource();
             _coverFilePath = null;
         }
@@ -139,7 +222,7 @@ public sealed partial class NowPlayingView
                         });
                     }
                 }
-                catch (OperationCanceledException) {}
+                catch (OperationCanceledException) { }
                 catch (Exception ex)
                 {
                     AppLogger.Debug("NowPlayingView", $"EnsureSongCoverAsync error: {ex.Message}");
@@ -158,7 +241,7 @@ public sealed partial class NowPlayingView
         _coverFilePath = coverPath;
         if (Visible)
         {
-            RenderCoverIfVisible();
+            TriggerRenderDelayed();
         }
     }
 
@@ -169,7 +252,7 @@ public sealed partial class NowPlayingView
         _showTranslation = _hasTranslation && showTranslation;
         if (_transBtn != null)
         {
-            _transBtn.Visible = _hasTranslation;
+            _transBtn.Visible = !_isCommentViewActive && _hasTranslation;
             UpdateTransButtonHighlight();
         }
         _currentActiveLyricIndex = -1;
@@ -232,7 +315,7 @@ public sealed partial class NowPlayingView
                             }
                         }
                     }
-                    catch {}
+                    catch { }
                 }
                 _lyricScrollBar?.UpdateMetrics(sourceCount, _lyricListView.Viewport.Height, _lyricListView.Viewport.Y);
             }
@@ -306,6 +389,7 @@ public sealed partial class NowPlayingView
     {
         Visible = true;
         SetFocus();
+        TerminalImageHelper.DeleteKittyImage(TerminalImageHelper.ImageIdArtistDetail);
         _lastRenderCols = Viewport.Width;
         _lastRenderRows = Viewport.Height;
         RefreshLyrics();
@@ -322,19 +406,19 @@ public sealed partial class NowPlayingView
             _albumLink.SetInteractiveEnabled(true);
         }
 
-        Application.AddTimeout(TimeSpan.FromMilliseconds(50), () =>
+        if (_isCommentViewActive)
         {
-            if (Visible)
-            {
-                RenderCoverIfVisible();
-            }
-            return false;
-        });
+            _commentView.SetSong(_currentSong);
+            _commentView.OnActivated();
+        }
+
+        TriggerRenderDelayed();
     }
 
     public void OnDeactivated()
     {
         Visible = false;
+        _commentView.OnDeactivated();
         if (_resizeTimerToken != null)
         {
             Application.RemoveTimeout(_resizeTimerToken);
@@ -353,7 +437,7 @@ public sealed partial class NowPlayingView
             Application.RemoveTimeout(_resizeTimerToken);
             _resizeTimerToken = null;
         }
-        _resizeTimerToken = Application.AddTimeout(TimeSpan.FromMilliseconds(80), () =>
+        _resizeTimerToken = Application.AddTimeout(TimeSpan.FromMilliseconds(120), () =>
         {
             _resizeTimerToken = null;
             if (Visible)
@@ -375,7 +459,7 @@ public sealed partial class NowPlayingView
     private void UpdateTransButtonHighlight()
     {
         if (_transBtn == null) return;
-        _transBtn.Visible = _hasTranslation;
+        _transBtn.Visible = !_isCommentViewActive && _hasTranslation;
         var color = (_showTranslation && _hasTranslation) ? MikuTheme.QqGreenLight : MikuTheme.MikuTextMuted;
         var attr = new Attribute(color, Color.None);
         _transBtn.SetScheme(new Scheme
@@ -399,6 +483,7 @@ public sealed partial class NowPlayingView
     private void UpdateMatchLyricButtonHighlight()
     {
         if (_matchLyricBtn == null) return;
+        _matchLyricBtn.Visible = !_isCommentViewActive && _currentSong != null && (_currentSong.IsLocal || _currentSong.IsWebDav);
         _matchLyricBtn.Text = "[Y] 匹配";
         var color = _isLyricMatched ? MikuTheme.QqGreenLight : MikuTheme.MikuTextMuted;
         var attr = new Attribute(color, Color.None);

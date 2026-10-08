@@ -92,7 +92,7 @@ public sealed partial class MainWindow
                             _preferredQualityTier = AudioQualityHelper.Parse(cmd.QualityTier);
                         }
 
-                        // 对齐作者移动端流媒体中转与直连策略：
+                        // 对齐移动端流媒体中转与直连策略：
                         // 1. AudioSource STREAM_PROXY
                         // 2. Song.MediaMid 为 http/https 流
                         // 3. Song.LocalFilePath 为 http/https 流或本地有效文件
@@ -306,11 +306,18 @@ public sealed partial class MainWindow
             _connectServer.SetVolumeRequested += vol => Application.Invoke(() => AdjustVolumeDirect((int)Math.Round(vol * 100)));
             _connectServer.SwitchTierRequested += tierStr =>
             {
-                Application.Invoke(async () =>
+                _ = Task.Run(async () =>
                 {
-                    var tier = AudioQualityHelper.Parse(tierStr);
-                    await SwitchQualityTierAsync(tier).ConfigureAwait(false);
-                    BroadcastConnectPlayerState();
+                    try
+                    {
+                        var tier = AudioQualityHelper.Parse(tierStr);
+                        await SwitchQualityTierAsync(tier).ConfigureAwait(false);
+                        BroadcastConnectPlayerState();
+                    }
+                    catch (Exception ex)
+                    {
+                        AppLogger.Error("MainWindow.Connect", $"SwitchTierRequested error for tier {tierStr}", ex);
+                    }
                 });
             };
             _connectServer.CycleLoopModeRequested += payload => Application.Invoke(() =>
@@ -469,79 +476,79 @@ public sealed partial class MainWindow
                 return null;
             };
 
-                _connectServer.CurrentLyricsTextProvider = () => GetOrBuildFormattedLyricsPayload();
+            _connectServer.CurrentLyricsTextProvider = () => GetOrBuildFormattedLyricsPayload();
 
-                _connectServer.Start();
-                _connectMdns = new ConnectMdnsService(_connectStorage, port: _connectServer.ActualPort);
-                _connectMdns.Start();
-                AppLogger.Info("MainWindow.Connect", $"Melodist Connect service & mDNS started on port {_connectServer.ActualPort}");
-            }
-            catch (Exception ex)
-            {
-                AppLogger.Error("MainWindow.Connect", "Failed to start Connect service", ex);
-            }
+            _connectServer.Start();
+            _connectMdns = new ConnectMdnsService(_connectStorage, port: _connectServer.ActualPort);
+            _connectMdns.Start();
+            AppLogger.Info("MainWindow.Connect", $"Melodist Connect service & mDNS started on port {_connectServer.ActualPort}");
         }
-
-        public void BroadcastConnectPlayerState()
+        catch (Exception ex)
         {
-            if (_connectServer == null || !_connectServer.IsRunning || _connectServer.ConnectedCount == 0) return;
+            AppLogger.Error("MainWindow.Connect", "Failed to start Connect service", ex);
+        }
+    }
 
-            try
+    public void BroadcastConnectPlayerState()
+    {
+        if (_connectServer == null || !_connectServer.IsRunning || _connectServer.ConnectedCount == 0) return;
+
+        try
+        {
+            var isPlaying = _isTuiAudioDisabled ? _isWebPlaying : _player.IsPlaying;
+            var hasActiveSong = _activeSong != null;
+            var isActuallyActive = isPlaying || _player.TotalDurationSeconds > 0 || _isWebPlaying || hasActiveSong;
+            var posSec = _isTuiAudioDisabled ? _webVirtualPosition : _player.CurrentPositionSeconds;
+            var durSec = _player.TotalDurationSeconds > 0 ? _player.TotalDurationSeconds : (_activeSong?.Duration ?? 0);
+            var queue = PlaybackQueueService.Instance.ActiveSongs;
+            var curIdx = PlaybackQueueService.Instance.CurrentIndex;
+
+            var actualPort = _connectServer.ActualPort;
+
+            ConnectSong? connectSong = null;
+            if (_activeSong != null)
             {
-                var isPlaying = _isTuiAudioDisabled ? _isWebPlaying : _player.IsPlaying;
-                var hasActiveSong = _activeSong != null;
-                var isActuallyActive = isPlaying || _player.TotalDurationSeconds > 0 || _isWebPlaying || hasActiveSong;
-                var posSec = _isTuiAudioDisabled ? _webVirtualPosition : _player.CurrentPositionSeconds;
-                var durSec = _player.TotalDurationSeconds > 0 ? _player.TotalDurationSeconds : (_activeSong?.Duration ?? 0);
-                var queue = PlaybackQueueService.Instance.ActiveSongs;
-                var curIdx = PlaybackQueueService.Instance.CurrentIndex;
+                connectSong = ConnectSong.FromDomainSong(_activeSong, _actualQualityTier, actualPort);
+            }
 
-                var actualPort = _connectServer.ActualPort;
+            ConnectSong? prevSong = null;
+            ConnectSong? nextSong = null;
+            var prevDomain = PlaybackQueueService.Instance.PeekPrevSong();
+            if (prevDomain != null)
+            {
+                prevSong = ConnectSong.FromDomainSong(prevDomain, AudioQualityTier.SQ, actualPort);
+            }
+            var nextDomain = PlaybackQueueService.Instance.PeekNextSong();
+            if (nextDomain != null)
+            {
+                nextSong = ConnectSong.FromDomainSong(nextDomain, AudioQualityTier.SQ, actualPort);
+            }
 
-                ConnectSong? connectSong = null;
-                if (_activeSong != null)
-                {
-                    connectSong = ConnectSong.FromDomainSong(_activeSong, _actualQualityTier, actualPort);
-                }
+            string? lrcPayload = GetOrBuildFormattedLyricsPayload();
 
-                ConnectSong? prevSong = null;
-                ConnectSong? nextSong = null;
-                var prevDomain = PlaybackQueueService.Instance.PeekPrevSong();
-                if (prevDomain != null)
-                {
-                    prevSong = ConnectSong.FromDomainSong(prevDomain, AudioQualityTier.SQ, actualPort);
-                }
-                var nextDomain = PlaybackQueueService.Instance.PeekNextSong();
-                if (nextDomain != null)
-                {
-                    nextSong = ConnectSong.FromDomainSong(nextDomain, AudioQualityTier.SQ, actualPort);
-                }
+            var availableTiers = new List<string> { "Standard", "HQ", "SQ", "HiRes", "Master" };
 
-                string? lrcPayload = GetOrBuildFormattedLyricsPayload();
+            var evt = new PlayerStateEvent(
+                CurrentSong: connectSong,
+                IsPlaying: isPlaying,
+                PositionMs: (long)(posSec * 1000),
+                DurationMs: (long)(durSec * 1000),
+                Volume: _player.Volume / 100.0f,
+                QueueSize: queue.Count,
+                CurrentIndex: curIdx,
+                LoopMode: _currentPlaybackMode.ToConnectLoopMode(),
+                IsAodActive: _isAodMode,
+                PrevSong: prevSong,
+                NextSong: nextSong,
+                CurrentTier: _actualQualityTier.ToString(),
+                AvailableTiers: availableTiers,
+                IsFavorite: isActuallyActive && _activeSong != null && IsSongFavorite(_activeSong),
+                IsRadioMode: RadioService.Instance.HasActiveRadio,
+                LyricOffsetMs: 0,
+                Lyrics: lrcPayload
+            );
 
-                var availableTiers = new List<string> { "Standard", "HQ", "SQ", "HiRes", "Master" };
-
-                var evt = new PlayerStateEvent(
-                    CurrentSong: connectSong,
-                    IsPlaying: isPlaying,
-                    PositionMs: (long)(posSec * 1000),
-                    DurationMs: (long)(durSec * 1000),
-                    Volume: _player.Volume / 100.0f,
-                    QueueSize: queue.Count,
-                    CurrentIndex: curIdx,
-                    LoopMode: _currentPlaybackMode.ToConnectLoopMode(),
-                    IsAodActive: _isAodMode,
-                    PrevSong: prevSong,
-                    NextSong: nextSong,
-                    CurrentTier: _actualQualityTier.ToString(),
-                    AvailableTiers: availableTiers,
-                    IsFavorite: isActuallyActive && _activeSong != null && IsSongFavorite(_activeSong),
-                    IsRadioMode: RadioService.Instance.HasActiveRadio,
-                    LyricOffsetMs: 0,
-                    Lyrics: lrcPayload
-                );
-
-                _connectServer.BroadcastPlayerState(evt);
+            _connectServer.BroadcastPlayerState(evt);
         }
         catch (Exception ex)
         {

@@ -16,14 +16,16 @@ namespace QmTui.UI;
 public sealed class MiniCoverView : FrameView
 {
     private readonly Label _placeholderLabel;
+    private readonly uint _imageId;
     private string? _currentCoverPath;
     private Song? _currentSong;
     private object? _resizeTimerToken;
 
     public event Action? CoverClicked;
 
-    public MiniCoverView()
+    public MiniCoverView(uint imageId = TerminalImageHelper.ImageIdMiniCover)
     {
+        _imageId = imageId;
         Title = "";
         Width = 14;
         Height = 8;
@@ -68,7 +70,7 @@ public sealed class MiniCoverView : FrameView
         };
     }
 
-    public void SetSong(Song? song, string? qualityBadge)
+    public void SetSong(Song? song, string? qualityBadge = null)
     {
         _currentSong = song;
 
@@ -110,13 +112,13 @@ public sealed class MiniCoverView : FrameView
             Application.RemoveTimeout(_resizeTimerToken);
             _resizeTimerToken = null;
         }
-        TerminalImageHelper.DeleteKittyImage(TerminalImageHelper.ImageIdMiniCover);
+        TerminalImageHelper.DeleteKittyImage(_imageId);
     }
 
     public void OnWindowResized()
     {
         if (!Visible) return;
-        TerminalImageHelper.DeleteKittyImage(TerminalImageHelper.ImageIdMiniCover);
+        TerminalImageHelper.DeleteKittyImage(_imageId);
         TriggerRenderDelayed();
     }
 
@@ -138,23 +140,13 @@ public sealed class MiniCoverView : FrameView
             _resizeTimerToken = null;
         }
 
-        // 60ms 快速首绘
-        _resizeTimerToken = Application.AddTimeout(TimeSpan.FromMilliseconds(60), () =>
+        // 单次 120ms 防抖绘制，确保 Terminal.Gui 字符边框完全绘制完成后单次置顶，消除二次重绘闪烁
+        _resizeTimerToken = Application.AddTimeout(TimeSpan.FromMilliseconds(120), () =>
         {
             _resizeTimerToken = null;
             if (Visible)
             {
                 RenderCoverIfVisible();
-
-                // 250ms 二次补位重绘，确保所有字符边框绘制完毕后 Kitty 图像稳定贴合
-                Application.AddTimeout(TimeSpan.FromMilliseconds(250), () =>
-                {
-                    if (Visible)
-                    {
-                        RenderCoverIfVisible();
-                    }
-                    return false;
-                });
             }
             return false;
         });
@@ -195,12 +187,21 @@ public sealed class MiniCoverView : FrameView
             int renderRow = contentRow + rowOffset;
 
             // 原画 1:1 满幅贴合微圆角封面渲染
-            TerminalImageHelper.RenderKittyImage(_currentCoverPath, renderCol, renderRow, targetCols, rows: 0, TerminalImageHelper.ImageIdMiniCover);
+            TerminalImageHelper.RenderKittyImage(_currentCoverPath, renderCol, renderRow, targetCols, rows: 0, _imageId);
             _placeholderLabel.Visible = false;
         }
         catch
         {
             _placeholderLabel.Visible = true;
         }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            ClearCover();
+        }
+        base.Dispose(disposing);
     }
 }

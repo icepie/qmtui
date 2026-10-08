@@ -60,11 +60,20 @@ public static partial class TerminalImageHelper
                 return true;
             }
 
+            // 显式排除 WezTerm：WezTerm 将 Kitty 协议图像绑定至字符单元格，TUI 字符重绘易导致图像擦除丢失
+            var termProgram = Environment.GetEnvironmentVariable("TERM_PROGRAM") ?? "";
+            if (termProgram.Equals("WezTerm", StringComparison.OrdinalIgnoreCase) ||
+                !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WEZTERM_PANE")) ||
+                !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WEZTERM_EXECUTABLE")))
+            {
+                s_isImageSupported = false;
+                return false;
+            }
+
             // 1. 探测 Kitty 环境变量
             var kittyWindowId = Environment.GetEnvironmentVariable("KITTY_WINDOW_ID");
             var kittyPid = Environment.GetEnvironmentVariable("KITTY_PID");
             var term = Environment.GetEnvironmentVariable("TERM") ?? "";
-            var termProgram = Environment.GetEnvironmentVariable("TERM_PROGRAM") ?? "";
 
             if (!string.IsNullOrEmpty(kittyWindowId) ||
                 !string.IsNullOrEmpty(kittyPid) ||
@@ -74,9 +83,10 @@ public static partial class TerminalImageHelper
                 return true;
             }
 
-            // 2. 探测原生支持 Kitty Graphics Protocol 的终端（Ghostty, WezTerm 等）
+            // 2. 探测原生支持 Kitty Graphics Protocol 独立渲染层的终端（Ghostty, Rio 等）
             if (termProgram.Equals("ghostty", StringComparison.OrdinalIgnoreCase) ||
-                termProgram.Equals("WezTerm", StringComparison.OrdinalIgnoreCase))
+                termProgram.Equals("rio", StringComparison.OrdinalIgnoreCase) ||
+                term.Equals("rio", StringComparison.OrdinalIgnoreCase))
             {
                 s_isImageSupported = true;
                 return true;

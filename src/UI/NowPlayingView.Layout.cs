@@ -20,7 +20,9 @@ namespace QmTui.UI;
 public sealed partial class NowPlayingView
 {
 
-    public void RestoreCoverAfterDialog()
+    public void RestoreCoverAfterDialog() => TriggerRenderDelayed();
+
+    public void TriggerRenderDelayed()
     {
         if (!Visible || !TerminalImageHelper.IsImageSupported || string.IsNullOrEmpty(_coverFilePath) || !File.Exists(_coverFilePath))
         {
@@ -33,7 +35,8 @@ public sealed partial class NowPlayingView
             _resizeTimerToken = null;
         }
 
-        _resizeTimerToken = Application.AddTimeout(TimeSpan.FromMilliseconds(60), () =>
+        // 单次 120ms 防抖绘制，确保 Terminal.Gui 字符背景全部输出完毕后单次呈现，消除二次重绘闪烁
+        _resizeTimerToken = Application.AddTimeout(TimeSpan.FromMilliseconds(120), () =>
         {
             _resizeTimerToken = null;
             if (Visible)
@@ -79,10 +82,11 @@ public sealed partial class NowPlayingView
             int renderCol = col + colOffset;
             int renderRow = Math.Max(1, row + rowOffset);
 
-            TerminalImageHelper.RenderKittyImage(_coverFilePath, renderCol, renderRow, targetCols, rows: 0, TerminalImageHelper.ImageIdNowPlaying);
-
             // 严格对齐：底部信息容器 X 坐标与封面起始列完全相同（colOffset），保持绝对左对齐
+            // 在发送终端图像前先对齐下方文本布局，避免图片送出后立即触发子控件重绘擦除 Kitty 图像
             UpdateSongInfoLayout(colOffset, targetCols, rowOffset + targetRows + 1);
+
+            TerminalImageHelper.RenderKittyImage(_coverFilePath, renderCol, renderRow, targetCols, rows: 0, TerminalImageHelper.ImageIdNowPlaying);
         }
         catch
         {
@@ -90,9 +94,22 @@ public sealed partial class NowPlayingView
         }
     }
 
+    private int _lastSongInfoColOffset = -1;
+    private int _lastSongInfoTargetCols = -1;
+    private int _lastSongInfoTopRow = -1;
+
     private void UpdateSongInfoLayout(int colOffset, int targetCols, int topRow)
     {
         if (_songInfoContainer == null) return;
+
+        if (_lastSongInfoColOffset == colOffset && _lastSongInfoTargetCols == targetCols && _lastSongInfoTopRow == topRow)
+        {
+            return;
+        }
+
+        _lastSongInfoColOffset = colOffset;
+        _lastSongInfoTargetCols = targetCols;
+        _lastSongInfoTopRow = topRow;
 
         // 与封面始终保持绝对左对齐
         _songInfoContainer.X = colOffset;
@@ -141,11 +158,14 @@ public sealed partial class NowPlayingView
         else
         {
             StopImmersiveTimer();
-            _transBtn.Visible = _hasTranslation;
-            _immersiveBtn.Visible = true;
-            if (_currentSong != null && (_currentSong.IsLocal || _currentSong.IsWebDav))
+            if (!_isCommentViewActive)
             {
-                _matchLyricBtn.Visible = true;
+                _transBtn.Visible = _hasTranslation;
+                _immersiveBtn.Visible = true;
+                if (_currentSong != null && (_currentSong.IsLocal || _currentSong.IsWebDav))
+                {
+                    _matchLyricBtn.Visible = true;
+                }
             }
             _isInteractiveHighlightSuppressed = false;
             // 退出沉浸模式后恢复可选择
@@ -160,6 +180,11 @@ public sealed partial class NowPlayingView
     private void UpdateImmersiveButtonHighlight()
     {
         if (_immersiveBtn == null) return;
+        if (_isCommentViewActive)
+        {
+            _immersiveBtn.Visible = false;
+            return;
+        }
         var color = _isImmersiveMode ? MikuTheme.QqGreenLight : MikuTheme.MikuTextMuted;
         var attr = new Attribute(color, Color.None);
         _immersiveBtn.SetScheme(new Scheme
@@ -176,6 +201,7 @@ public sealed partial class NowPlayingView
 
     public void TriggerImmersiveActivity()
     {
+        if (_isCommentViewActive) return;
         _lastImmersiveActivityTick = Environment.TickCount64;
         bool isLocalOrWebDav = _currentSong != null && (_currentSong.IsLocal || _currentSong.IsWebDav);
         bool transNeedShow = _hasTranslation && !_transBtn.Visible;
@@ -270,24 +296,54 @@ public sealed class InteractiveLinkView : Label
 {
     private string _text;
     private bool _isHighlightSuppressed;
+    private bool _isHovered;
 
     public int ContentWidth { get; private set; }
 
     public event Action? LinkSelected;
     public event Action? NavigateNextRequested;
     public event Action? NavigatePrevRequested;
+    public event Action<bool>? TabNavigationRequested;
 
     public InteractiveLinkView(string initialText)
     {
         _text = initialText;
         CanFocus = true;
         TabStop = TabBehavior.TabGroup;
+        KeyBindings.Remove(Key.Tab);
+        KeyBindings.Remove(Key.Tab.WithShift);
         Height = 1;
+        MousePositionTracking = true;
         UpdateMetrics();
+
+        MouseEnter += (s, e) =>
+        {
+            if (!CanFocus) return;
+            if (!_isHovered)
+            {
+                _isHovered = true;
+                UpdateVisualScheme();
+            }
+        };
+
+        MouseLeave += (s, e) =>
+        {
+            if (_isHovered)
+            {
+                _isHovered = false;
+                UpdateVisualScheme();
+            }
+        };
 
         MouseEvent += (s, m) =>
         {
             if (!CanFocus) return; // 沉浸模式下禁用一切交互与选中
+
+            if (!_isHovered)
+            {
+                _isHovered = true;
+                UpdateVisualScheme();
+            }
 
             // 单击仅获焦，双击才执行激活跳转（防止误触）
             if (m.Flags.HasFlag(MouseFlags.LeftButtonDoubleClicked))
@@ -309,6 +365,13 @@ public sealed class InteractiveLinkView : Label
         KeyDown += (s, k) =>
         {
             if (!CanFocus) return;
+
+            if (k == Key.Tab || k.AsRune.Value == '\t' || k.ToString().Contains("Tab"))
+            {
+                TabNavigationRequested?.Invoke(!k.IsShift);
+                k.Handled = true;
+                return;
+            }
 
             if (k == Key.Enter || k.AsRune.Value == '\r' || k.AsRune.Value == '\n')
             {
@@ -348,6 +411,10 @@ public sealed class InteractiveLinkView : Label
     {
         CanFocus = enabled;
         TabStop = enabled ? TabBehavior.TabGroup : TabBehavior.NoStop;
+        if (!enabled)
+        {
+            _isHovered = false;
+        }
         UpdateVisualScheme();
     }
 
@@ -370,7 +437,7 @@ public sealed class InteractiveLinkView : Label
 
     private void UpdateVisualScheme()
     {
-        bool showActive = CanFocus && HasFocus && !_isHighlightSuppressed;
+        bool showActive = CanFocus && (HasFocus || _isHovered) && !_isHighlightSuppressed;
         if (showActive)
         {
             SetScheme(new Scheme

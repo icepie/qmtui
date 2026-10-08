@@ -53,7 +53,7 @@ public sealed partial class MainWindow
             previousCts?.Cancel();
             previousCts?.Dispose();
         }
-        catch {}
+        catch { }
 
         var currentCts = _playbackCts;
         var currentSession = Interlocked.Increment(ref _playbackSessionId);
@@ -66,7 +66,7 @@ public sealed partial class MainWindow
             _cachingCts?.Cancel();
             _cachingCts?.Dispose();
         }
-        catch {}
+        catch { }
         _cachingCts = new CancellationTokenSource();
         _hasTriggeredCacheForCurrentSong = false;
         _hasReportedCurrentSong = false;
@@ -207,7 +207,7 @@ public sealed partial class MainWindow
                 }
             }
             _lyricListView.SetSource(new ObservableCollection<string> { "正在加载歌词..." });
-            try { _lyricListView.SelectedItem = 0; } catch {}
+            try { _lyricListView.SelectedItem = 0; } catch { }
         });
 
         string? playUrl;
@@ -260,7 +260,7 @@ public sealed partial class MainWindow
                 }
                 else
                 {
-                    // 2. 本地尚未缓存：直接使用带凭据的流式直链 URL 秒级起播，无需等待音频全部缓冲完毕
+                    // 2. 本地尚未缓存：直接使用流式直链 URL 起播，无需等待音频全部缓冲完毕
                     Application.Invoke(() =>
                     {
                         if (IsStale()) return;
@@ -386,7 +386,7 @@ public sealed partial class MainWindow
                 if (IsStale()) return;
 
                 _lastResolvedPlayUrl = playUrl;
-                // 优化：不再在起播时立即全量写盘，延后至连续收听满 30 秒后再触发后台缓存，前奏切歌不消耗任何全量带宽
+                // 起播时不立即写盘，连续收听满 30 秒后触发后台缓存，切歌时不占用缓存写入带宽
             }
         }
 
@@ -484,7 +484,7 @@ public sealed partial class MainWindow
                         });
                     }
                 }
-                catch (OperationCanceledException) {}
+                catch (OperationCanceledException) { }
                 catch (Exception ex)
                 {
                     AppLogger.Debug("MainWindow.Playback", $"Cover load error: {ex.Message}");
@@ -496,7 +496,7 @@ public sealed partial class MainWindow
                 }
             }, ct);
 
-            // 若为本地歌曲或 WebDAV 歌曲，且满足智能匹配规则，后台自动尝试匹配在线歌词与双语翻译
+            // 若为本地歌曲或 WebDAV 歌曲，且满足匹配规则，后台自动尝试匹配在线歌词与翻译
             bool isLocalOrWebDav = song.IsLocal || song.IsWebDav;
             if (isLocalOrWebDav && !IsCurrentSongLyricMatched(song) && LocalLyricAutoMatcher.NeedsMatching(song, _currentLyrics))
             {
@@ -522,6 +522,11 @@ public sealed partial class MainWindow
                 _nowPlayingView.SetLyrics(_currentLyrics, _showTranslation);
                 _nowPlayingView.SetLyricMatchedState(IsCurrentSongLyricMatched(song));
                 UpdateLyricMatchButtonHighlight();
+                if (_isCommentViewActive)
+                {
+                    _songCommentView.SetSong(song);
+                    UpdateCommentTitle();
+                }
             });
         }
         else
@@ -571,7 +576,7 @@ public sealed partial class MainWindow
             BroadcastConnectLyrics();
         });
 
-        // 启动后台平滑预热下一首曲目的音源与封面
+        // 启动后台预热下一首曲目的音源与封面
         _ = Task.Run(PrefetchNextSongAsync);
     }
 
@@ -762,7 +767,7 @@ public sealed partial class MainWindow
         _controlBar.UpdateProgress(cur, total, progressPercent);
         _mprisService.UpdatePosition(currentSec, _activeSong.Duration);
 
-        // 同步推送高精度播放进度与状态给移动端 App
+        // 同步推送播放进度与状态给移动端 App
         if (_connectServer != null && _connectServer.IsRunning && _connectServer.ConnectedCount > 0)
         {
             if (Environment.TickCount64 - _lastConnectBroadcastTick > 400)

@@ -91,7 +91,7 @@ public sealed partial class MainWindow
     {
         _lastUserActivityTick = Environment.TickCount64;
         _lastImmersiveActivityTick = Environment.TickCount64;
-        if (_isImmersiveMode)
+        if (_isImmersiveMode && !_isCommentViewActive)
         {
             bool isLocalOrWebDav = _activeSong != null && (_activeSong.IsLocal || _activeSong.IsWebDav);
             bool transNeedShow = _hasTranslation && !_lyricTransBtn.Visible;
@@ -189,7 +189,7 @@ public sealed partial class MainWindow
         {
             if (v == _sidebarList || v == _sidebarFrame) return 0;
             if (v == _songListView) return 1;
-            if (v == _lyricFrame || v == _lyricListView || v == _artistAlbumDetailView) return 2;
+            if (v == _lyricFrame || v == _lyricListView || v == _artistAlbumDetailView || v == _songCommentView) return 2;
             if (v == _controlBar) return 3;
             if (v == _nowPlayingView) return 4;
         }
@@ -250,6 +250,8 @@ public sealed partial class MainWindow
         _sidebarFrame.Visible = false;
         _miniCoverView.Visible = false;
         _miniCoverView.ClearCover();
+        _artistAlbumDetailView.ClearImage();
+        _songCommentView.OnDeactivated();
         _songListView.Visible = false;
         _lyricFrame.Visible = false;
         _searchLabel.Visible = false;
@@ -271,6 +273,8 @@ public sealed partial class MainWindow
         _nowPlayingView.SetTranslationState(_showTranslation);
         _nowPlayingView.SetLyricMatchedState(IsCurrentSongLyricMatched(_activeSong));
         _nowPlayingView.SetImmersiveState(_isImmersiveMode);
+        _nowPlayingView.SyncCommentFrom(_songCommentView);
+        _nowPlayingView.SetCommentViewActive(_isCommentViewActive);
         _nowPlayingView.OnActivated();
         _nowPlayingView.UpdatePlaybackTime(_player.CurrentPositionSeconds);
         SetNeedsDraw();
@@ -280,6 +284,15 @@ public sealed partial class MainWindow
     {
         _isNowPlayingViewActive = false;
         _nowPlayingView.OnDeactivated();
+        _songCommentView.SyncFrom(_nowPlayingView.CommentView);
+        if (_isCommentViewActive != _nowPlayingView.IsCommentViewActive)
+        {
+            SetCommentViewState(_nowPlayingView.IsCommentViewActive);
+        }
+        else if (_isCommentViewActive)
+        {
+            UpdateCommentTitle();
+        }
 
         _sidebarFrame.Visible = true;
         UpdateSidebarLayout();
@@ -300,6 +313,12 @@ public sealed partial class MainWindow
         if (_artistAlbumDetailView.Visible)
         {
             _artistAlbumDetailView.OnActivated();
+        }
+        if (_isCommentViewActive)
+        {
+            _songCommentView.SetSong(_activeSong);
+            _songCommentView.OnActivated();
+            UpdateCommentTitle();
         }
         SetNeedsDraw();
     }
@@ -340,7 +359,7 @@ public sealed partial class MainWindow
 
         if (_artistAlbumDetailView.Visible)
         {
-            _artistAlbumDetailView.OnDeactivated();
+            _artistAlbumDetailView.ClearImage();
         }
         else
         {
@@ -412,14 +431,44 @@ public sealed partial class MainWindow
 
     private async Task HandleRealEscapeKeyAsync()
     {
+        if (_isNowPlayingViewActive)
+        {
+            if (_nowPlayingView.CommentView.IsImagePreviewActive)
+            {
+                _nowPlayingView.CommentView.CloseCommentImagePreview();
+                return;
+            }
+            if (Environment.TickCount64 - _nowPlayingView.CommentView.LastPreviewCloseTick < 400)
+            {
+                return;
+            }
+            if (_nowPlayingView.IsCommentViewActive)
+            {
+                _nowPlayingView.ToggleCommentView();
+                return;
+            }
+            CloseNowPlayingView();
+            return;
+        }
+
+        if (_isCommentViewActive)
+        {
+            if (_songCommentView.IsImagePreviewActive)
+            {
+                _songCommentView.CloseCommentImagePreview();
+                return;
+            }
+            if (Environment.TickCount64 - _songCommentView.LastPreviewCloseTick < 400)
+            {
+                return;
+            }
+            ToggleCommentView();
+            return;
+        }
         if (_isImmersiveMode)
         {
             ApplyImmersiveMode(false);
             return;
-        }
-        if (_isNowPlayingViewActive)
-        {
-            CloseNowPlayingView();
         }
         else if (_navigationStack.Count > 0)
         {

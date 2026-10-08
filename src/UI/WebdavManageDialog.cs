@@ -31,15 +31,15 @@ public sealed class WebdavManageDialog : Dialog
 
     private static Scheme TransparentDialogScheme { get; } = new Scheme
     {
-        Normal    = new Terminal.Gui.Drawing.Attribute(MikuTheme.MikuTextWhite, Color.None),
-        Focus     = new Terminal.Gui.Drawing.Attribute(Color.White, MikuTheme.QqGreenDark),
+        Normal = new Terminal.Gui.Drawing.Attribute(MikuTheme.MikuTextWhite, Color.None),
+        Focus = new Terminal.Gui.Drawing.Attribute(Color.White, MikuTheme.QqGreenDark),
         HotNormal = new Terminal.Gui.Drawing.Attribute(MikuTheme.MikuPinkAccent, Color.None),
-        HotFocus  = new Terminal.Gui.Drawing.Attribute(Color.White, MikuTheme.MikuPinkAccent),
-        Disabled  = new Terminal.Gui.Drawing.Attribute(MikuTheme.MikuTextMuted, Color.None),
+        HotFocus = new Terminal.Gui.Drawing.Attribute(Color.White, MikuTheme.MikuPinkAccent),
+        Disabled = new Terminal.Gui.Drawing.Attribute(MikuTheme.MikuTextMuted, Color.None),
         Highlight = new Terminal.Gui.Drawing.Attribute(MikuTheme.QqGreenPrimary, Color.None),
-        Active    = new Terminal.Gui.Drawing.Attribute(MikuTheme.QqGreenLight, MikuTheme.QqGreenDark),
-        ReadOnly  = new Terminal.Gui.Drawing.Attribute(MikuTheme.MikuTextMuted, Color.None),
-        Editable  = new Terminal.Gui.Drawing.Attribute(Color.White, Color.None)
+        Active = new Terminal.Gui.Drawing.Attribute(MikuTheme.QqGreenLight, MikuTheme.QqGreenDark),
+        ReadOnly = new Terminal.Gui.Drawing.Attribute(MikuTheme.MikuTextMuted, Color.None),
+        Editable = new Terminal.Gui.Drawing.Attribute(Color.White, Color.None)
     };
 
     public WebdavManageDialog(Action onServersChanged, Action<WebDavServer> onSelectAndOpen)
@@ -91,8 +91,8 @@ public sealed class WebdavManageDialog : Dialog
 
         // 底部实体交互按钮组（移除了冗余的关闭按钮，按 Esc 即可退出）
         _selectBtn = new Button { Text = "激活 (Enter)", X = 2, Y = 13 };
-        _addBtn    = new Button { Text = "添加 (A)", X = Pos.Right(_selectBtn) + 2, Y = 13 };
-        _editBtn   = new Button { Text = "编辑 (E)", X = Pos.Right(_addBtn) + 2, Y = 13 };
+        _addBtn = new Button { Text = "添加 (A)", X = Pos.Right(_selectBtn) + 2, Y = 13 };
+        _editBtn = new Button { Text = "编辑 (E)", X = Pos.Right(_addBtn) + 2, Y = 13 };
         _deleteBtn = new Button { Text = "删除 (D)", X = Pos.Right(_editBtn) + 2, Y = 13 };
 
         _selectBtn.SetScheme(TransparentDialogScheme);
@@ -102,7 +102,7 @@ public sealed class WebdavManageDialog : Dialog
 
         Add(_selectBtn, _addBtn, _editBtn, _deleteBtn);
 
-        // 按钮直接绑定原生 Accepting（完美支持鼠标左键点击与键盘回车/空格触发）
+        // 按钮绑定原生 Accepting（支持鼠标左键点击与键盘回车/空格触发）
         _selectBtn.Accepting += (s, e) => SelectCurrentServer();
         _addBtn.Accepting += (s, e) => ShowAddDialog();
         _editBtn.Accepting += (s, e) => ShowEditDialog();

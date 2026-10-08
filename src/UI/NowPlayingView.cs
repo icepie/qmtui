@@ -11,6 +11,7 @@ using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 using QmTui.Models;
+using QmTui.Utils;
 using Attribute = Terminal.Gui.Drawing.Attribute;
 using Color = Terminal.Gui.Drawing.Color;
 using Rectangle = System.Drawing.Rectangle;
@@ -42,6 +43,8 @@ public sealed partial class NowPlayingView : View
     private readonly Label _transBtn;
     private readonly Label _immersiveBtn;
     private readonly Label _matchLyricBtn;
+    private readonly SongCommentView _commentView;
+    private bool _isCommentViewActive;
 
     private Song? _currentSong;
     private string? _coverFilePath;
@@ -98,7 +101,9 @@ public sealed partial class NowPlayingView : View
             Y = 0,
             Width = isImageSupported ? Dim.Percent(48) : 0,
             Height = Dim.Fill(),
-            CanFocus = isImageSupported,
+            CanFocus = true,
+            TabStop = TabBehavior.TabGroup,
+            MousePositionTracking = true,
             Visible = isImageSupported
         };
 
@@ -123,7 +128,7 @@ public sealed partial class NowPlayingView : View
 
         _unsupportedLabel3 = new Label
         {
-            Text = "(如 Kitty / WezTerm / Ghostty)",
+            Text = "(如 Kitty / Ghostty / Rio)",
             X = Pos.Center(),
             Y = Pos.Center() + 2,
             Visible = false
@@ -142,7 +147,9 @@ public sealed partial class NowPlayingView : View
             Y = Pos.AnchorEnd(4),
             Width = Dim.Fill(2),
             Height = 3,
-            CanFocus = true
+            CanFocus = true,
+            TabStop = TabBehavior.NoStop,
+            MousePositionTracking = true
         };
 
         _artistLink = new InteractiveLinkView("");
@@ -212,8 +219,13 @@ public sealed partial class NowPlayingView : View
             FocusChangedNotification?.Invoke();
         };
 
+        _artistLink.TabNavigationRequested += forward => HandleTabNavigation(forward);
+        _albumLink.TabNavigationRequested += forward => HandleTabNavigation(forward);
+
         _artistLink.HasFocusChanged += (s, e) => FocusChangedNotification?.Invoke();
         _albumLink.HasFocusChanged += (s, e) => FocusChangedNotification?.Invoke();
+        _artistLink.MouseEnter += (s, e) => TriggerInteractiveActivity();
+        _albumLink.MouseEnter += (s, e) => TriggerInteractiveActivity();
 
         _songInfoContainer.Add(_artistLink, _hyphenLabel, _songTitleLabel, _albumLink);
         _coverContainer.Add(_songInfoContainer);
@@ -226,7 +238,8 @@ public sealed partial class NowPlayingView : View
             Y = 0,
             Width = Dim.Fill(),
             Height = Dim.Fill(),
-            CanFocus = false
+            CanFocus = true,
+            TabStop = TabBehavior.TabGroup
         };
 
         _lyricListView = new ListView
@@ -422,7 +435,19 @@ public sealed partial class NowPlayingView : View
             }
         };
 
-        _lyricContainer.Add(_transBtn, _immersiveBtn, _matchLyricBtn);
+        _commentView = new SongCommentView
+        {
+            X = 0,
+            Y = 0,
+            Width = Dim.Fill(),
+            Height = Dim.Fill(),
+            Visible = false,
+            CanFocus = true
+        };
+        _commentView.CloseRequested += ToggleCommentView;
+        _commentView.TabNavigationRequested += forward => HandleTabNavigation(forward);
+
+        _lyricContainer.Add(_commentView, _transBtn, _immersiveBtn, _matchLyricBtn);
         UpdateTransButtonHighlight();
         UpdateImmersiveButtonHighlight();
         UpdateMatchLyricButtonHighlight();
@@ -442,6 +467,60 @@ public sealed partial class NowPlayingView : View
             TriggerImmersiveActivity();
             TriggerInteractiveActivity();
 
+            if (_isCommentViewActive)
+            {
+                AppLogger.Force("NowPlayingView", $"KeyDown in comment mode: key={k}, focused={Application.Navigation?.GetFocused()?.GetType().Name ?? "null"}, commentHasActiveFocus={_commentView.HasActiveFocus}");
+                if (k == Key.CursorUp)
+                {
+                    _commentView.SetFocus();
+                    _commentView.MovePrevious();
+                    k.Handled = true;
+                    return;
+                }
+                if (k == Key.CursorDown)
+                {
+                    _commentView.SetFocus();
+                    _commentView.MoveNext();
+                    k.Handled = true;
+                    return;
+                }
+                if (k == Key.CursorLeft || k == Key.PageUp)
+                {
+                    _commentView.SetFocus();
+                    _commentView.PagePrevious();
+                    k.Handled = true;
+                    return;
+                }
+                if (k == Key.CursorRight || k == Key.PageDown)
+                {
+                    _commentView.SetFocus();
+                    _commentView.PageNext();
+                    k.Handled = true;
+                    return;
+                }
+                if (k == Key.Home)
+                {
+                    _commentView.SetFocus();
+                    _commentView.ScrollToTop();
+                    k.Handled = true;
+                    return;
+                }
+                if (k == Key.End)
+                {
+                    _commentView.SetFocus();
+                    _commentView.ScrollToEnd();
+                    k.Handled = true;
+                    return;
+                }
+                if (k == Key.Enter)
+                {
+                    _commentView.SetFocus();
+                    _commentView.ActivateSelected();
+                    k.Handled = true;
+                    return;
+                }
+            }
+
             var ch = char.ToUpperInvariant((char)k.AsRune.Value);
             if (ch == 'E')
             {
@@ -459,6 +538,7 @@ public sealed partial class NowPlayingView : View
 
             if (ch == 'Y')
             {
+                if (_isCommentViewActive) return;
                 MatchLyricRequested?.Invoke();
                 k.Handled = true;
                 return;
@@ -466,6 +546,7 @@ public sealed partial class NowPlayingView : View
 
             if (ch == 'T')
             {
+                if (_isCommentViewActive) return;
                 if (_hasTranslation)
                 {
                     ToggleTranslationRequested?.Invoke();
@@ -476,6 +557,7 @@ public sealed partial class NowPlayingView : View
 
             if (ch == 'P')
             {
+                if (_isCommentViewActive) return;
                 ToggleImmersiveRequested?.Invoke();
                 k.Handled = true;
                 return;
@@ -490,6 +572,23 @@ public sealed partial class NowPlayingView : View
 
             if (k == Key.Esc)
             {
+                if (_isCommentViewActive)
+                {
+                    if (_commentView.IsImagePreviewActive)
+                    {
+                        _commentView.CloseCommentImagePreview();
+                        k.Handled = true;
+                        return;
+                    }
+                    if (Environment.TickCount64 - _commentView.LastPreviewCloseTick < 400)
+                    {
+                        k.Handled = true;
+                        return;
+                    }
+                    ToggleCommentView();
+                    k.Handled = true;
+                    return;
+                }
                 if (_isImmersiveMode)
                 {
                     ToggleImmersiveRequested?.Invoke();
@@ -504,6 +603,13 @@ public sealed partial class NowPlayingView : View
             if (k == Key.V || ch == 'V')
             {
                 BackRequested?.Invoke();
+                k.Handled = true;
+                return;
+            }
+
+            if (k == Key.C || ch == 'C')
+            {
+                ToggleCommentView();
                 k.Handled = true;
                 return;
             }
@@ -534,5 +640,50 @@ public sealed partial class NowPlayingView : View
         };
     }
 
+    public bool IsCommentViewActive => _isCommentViewActive;
+    public SongCommentView CommentView => _commentView;
+    public event Action<bool>? CommentViewToggled;
 
+    public void SyncCommentFrom(SongCommentView other)
+    {
+        _commentView.SyncFrom(other);
+    }
+
+    public void SetCommentViewActive(bool active)
+    {
+        if (_isCommentViewActive == active) return;
+        ToggleCommentView();
+    }
+
+    public void ToggleCommentView()
+    {
+        _isCommentViewActive = !_isCommentViewActive;
+        AppLogger.Force("NowPlayingView", $"ToggleCommentView: _isCommentViewActive={_isCommentViewActive}");
+        if (_isCommentViewActive)
+        {
+            _lyricListView.Visible = false;
+            _lyricScrollBar.Visible = false;
+            _transBtn.Visible = false;
+            _immersiveBtn.Visible = false;
+            _matchLyricBtn.Visible = false;
+            _commentView.Visible = true;
+            _commentView.SetSong(_currentSong);
+            _commentView.OnActivated();
+            bool fRes = _commentView.SetFocus();
+            AppLogger.Force("NowPlayingView", $"ToggleCommentView: _commentView.SetFocus()={fRes}, HasActiveFocus={_commentView.HasActiveFocus}");
+        }
+        else
+        {
+            _commentView.OnDeactivated();
+            _commentView.Visible = false;
+            _lyricListView.Visible = true;
+            _lyricScrollBar.Visible = true;
+            UpdateTransButtonHighlight();
+            UpdateImmersiveButtonHighlight();
+            UpdateMatchLyricButtonHighlight();
+            SetFocus();
+        }
+        SetNeedsDraw();
+        CommentViewToggled?.Invoke(_isCommentViewActive);
+    }
 }

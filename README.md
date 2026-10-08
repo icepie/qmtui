@@ -1,5 +1,23 @@
 # qmtui
 
+`qmtui` 是一款运行于 Linux 终端的 QQ 音乐 TUI 客户端。
+
+## 界面预览
+
+### 主界面
+![主界面](assets/preview-main.png)
+
+### 播放界面
+![播放界面](assets/preview-nowplaying.png)
+
+## 终端支持
+- **基础文本模式**：支持所有标准终端环境。
+- **封面图像显示**：基于 Kitty 图像协议，支持具备图像图层渲染的终端：
+  - [Kitty](https://sw.kovidgoyal.net/kitty/)
+  - [Ghostty](https://ghostty.org/)
+  - [Rio](https://raphamorim.io/rio/)
+  - 在不支持图像协议的终端中，界面将自动回退至基础文本模式。
+
 ## Web 远程控制
 
 ```bash
